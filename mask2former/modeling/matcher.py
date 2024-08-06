@@ -6,6 +6,7 @@ Modules to compute the matching cost and solve the corresponding LSAP.
 import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
+import numpy as np
 from torch import nn
 from torch.cuda.amp import autocast
 
@@ -87,6 +88,7 @@ class HungarianMatcher(nn.Module):
         self.cost_class = cost_class
         self.cost_mask = cost_mask
         self.cost_dice = cost_dice
+        self.cost_box = cost_mask
 
         assert cost_class != 0 or cost_mask != 0 or cost_dice != 0, "all costs cant be 0"
 
@@ -98,17 +100,39 @@ class HungarianMatcher(nn.Module):
         bs, num_queries = outputs["pred_logits"].shape[:2]
 
         indices = []
-
+        # For ADE20k dataset
+        stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
+            54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
         # Iterate through batch size
         for b in range(bs):
+            # tgt_bbox=targets[b]["boxes"][...,-2:]
+            tgt_bbox=targets[b]["boxes"]
+            if 'pred_boxes' in outputs:
+                out_bbox = outputs["pred_boxes"][b]
+                cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
-            out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
+                tgt_ids = targets[b]["labels"]
+                isthing = ~np.isin(tgt_ids.cpu().numpy(), stuff_idx)
+                cost_bbox[:, ~isthing] = cost_bbox[:, isthing].mean()
+                cost_bbox[cost_bbox.isnan()] = 0.0
+            else:
+                cost_bbox = torch.tensor(0).to(tgt_bbox.device)
+
+            # out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
+            # tgt_ids = targets[b]["labels"]
+
+            # # Compute the classification cost. Contrary to the loss, we don't use the NLL,
+            # # but approximate it in 1 - proba[target class].
+            # # The 1 is a constant that doesn't change the matching, it can be ommitted.
+            # cost_class = -out_prob[:, tgt_ids]
+
+            out_prob = outputs["pred_logits"][b].sigmoid()  # [num_queries, num_classes]
             tgt_ids = targets[b]["labels"]
-
-            # Compute the classification cost. Contrary to the loss, we don't use the NLL,
-            # but approximate it in 1 - proba[target class].
-            # The 1 is a constant that doesn't change the matching, it can be ommitted.
-            cost_class = -out_prob[:, tgt_ids]
+            alpha = 0.25
+            gamma = 2.0
+            neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+            pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+            cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
 
             out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
             # gt masks are already padded when preparing target
@@ -145,6 +169,7 @@ class HungarianMatcher(nn.Module):
                 self.cost_mask * cost_mask
                 + self.cost_class * cost_class
                 + self.cost_dice * cost_dice
+                + self.cost_box * cost_bbox
             )
             C = C.reshape(num_queries, -1).cpu()
 

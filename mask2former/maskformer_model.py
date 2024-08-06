@@ -15,6 +15,7 @@ from detectron2.utils.memory import retry_if_cuda_oom
 
 from .modeling.criterion import SetCriterion
 from .modeling.matcher import HungarianMatcher
+from .utils import box_ops
 
 
 @META_ARCH_REGISTRY.register()
@@ -115,7 +116,9 @@ class MaskFormer(nn.Module):
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
         )
 
-        weight_dict = {"loss_ce": class_weight, "loss_mask": mask_weight, "loss_dice": dice_weight}
+        weight_dict = {"interm_loss_ce": class_weight, "loss_ce": class_weight, "interm_loss_mask": mask_weight, \
+            "loss_mask": mask_weight, "interm_loss_dice": dice_weight, "loss_dice": dice_weight, "interm_loss_bbox": mask_weight, \
+                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight}
 
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
@@ -124,7 +127,8 @@ class MaskFormer(nn.Module):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
 
-        losses = ["labels", "masks"]
+        losses = ["labels", "masks", "points"]
+        # losses = ["labels", "masks"]
 
         criterion = SetCriterion(
             sem_seg_head.num_classes,
@@ -266,6 +270,9 @@ class MaskFormer(nn.Module):
         new_targets = []
         for targets_per_image in targets:
             # pad gt
+            h, w = targets_per_image.image_size
+            image_size_xyxy = torch.as_tensor([w, h, w, h], dtype=torch.float, device=self.device)
+
             gt_masks = targets_per_image.gt_masks
             padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
             padded_masks[:, : gt_masks.shape[1], : gt_masks.shape[2]] = gt_masks
@@ -273,6 +280,7 @@ class MaskFormer(nn.Module):
                 {
                     "labels": targets_per_image.gt_classes,
                     "masks": padded_masks,
+                    "boxes": box_ops.box_xyxy_to_cxcywh(targets_per_image.gt_boxes.tensor) / image_size_xyxy
                 }
             )
         return new_targets
@@ -284,10 +292,20 @@ class MaskFormer(nn.Module):
         return semseg
 
     def panoptic_inference(self, mask_cls, mask_pred):
-        scores, labels = F.softmax(mask_cls, dim=-1).max(-1)
+        # scores, labels = F.softmax(mask_cls, dim=-1).max(-1)
+        # mask_pred = mask_pred.sigmoid()
+            
+        # As we use focal loss in training, evaluate with sigmoid. As sigmoid is mainly for detection and not sharp
+        # enough for semantic and panoptic segmentation, we additionally use use softmax with a temperature to
+        # make the score sharper.   
+        scores, labels = mask_cls.sigmoid().max(-1)
         mask_pred = mask_pred.sigmoid()
-
         keep = labels.ne(self.sem_seg_head.num_classes) & (scores > self.object_mask_threshold)
+        # torch.save({'keep':keep}, "keep_685.pth")
+        
+        T = 0.06 
+        scores, labels = F.softmax(mask_cls.sigmoid() / T, dim=-1).max(-1)
+
         cur_scores = scores[keep]
         cur_classes = labels[keep]
         cur_masks = mask_pred[keep]

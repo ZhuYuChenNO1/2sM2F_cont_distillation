@@ -12,7 +12,13 @@ from detectron2.layers import Conv2d
 
 from .position_encoding import PositionEmbeddingSine
 from .maskformer_transformer_decoder import TRANSFORMER_DECODER_REGISTRY
+from .utils import box_ops
+from .utils.utils import gen_encoder_output_proposals_p, inverse_sigmoid
+import math
 
+def sigmoid_to_logit(x):
+    x = x.clamp(0.001, 0.999)
+    return torch.log(x / (1-x))
 
 class SelfAttentionLayer(nn.Module):
 
@@ -330,8 +336,20 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # output FFNs
         if self.mask_classification:
-            self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
+            self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
+
+        # maskdino like query_pos
+        self.ref_point_head = MLP(hidden_dim * 2, hidden_dim, hidden_dim, 2)
+        # self.ref_point_head = MLP(hidden_dim, hidden_dim, hidden_dim, 2)
+        self.query_scale = MLP(hidden_dim, hidden_dim, hidden_dim, 2)
+        self._bbox_embed = _bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        nn.init.constant_(_bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(_bbox_embed.layers[-1].bias.data, 0)
+        box_embed_layerlist = [_bbox_embed for _ in range(self.num_layers)]  # share box prediction each layer
+        self.bbox_embed = nn.ModuleList(box_embed_layerlist)
+        # self.bbox_embed = None
+    
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -384,25 +402,124 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # QxNxC
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
         output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
+        
+        # Two stage
+        feats = torch.cat(src, dim=0)
+        
+        # Use anchor points
+        output_memory, reference_point = gen_encoder_output_proposals_p(feats.transpose(0, 1), size_list, None)
+        # output_memory = output_memory.transpose(0, 1)
+        # not use anchor points
+        # output_memory = feats.transpose(0, 1)
 
+        enc_outputs_class_unselected, enc_outputs_outputs_mask, attn_mask = self.forward_prediction_heads(
+            output_memory.transpose(0, 1), mask_features, attn_mask_target_size=size_list[0]) 
+        topk = self.num_queries
+        hid_dim = src[-1].shape[-1]
+        topk_proposals= torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+
+        # flatten_feature_size = [0]+[s[0]*s[1] for s in size_list]
+        # temp = topk//7
+        # scale = [temp,2*temp,topk-3*temp] #1:2:4        feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
+        # # scale = [1,1,topk-2] #1:2:4        feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
+        # feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
+        # topk_proposals = []
+        # for i,s in enumerate(scale):
+        #     tp = torch.topk(enc_outputs_class_unselected[:,feat_len[i]:feat_len[i+1], :-1].max(-1)[0], s, dim=1)[1]
+        #     topk_proposals.append(tp+feat_len[i])
+        # topk_proposals = torch.stack([torch.cat([t[i] for t in topk_proposals]) for i in range(bs)])
+        
+        
+        # print(f"feats.permute(1, 0, 2):{feats.permute(1, 0, 2).shape}")#2,8400,256
+        # print(f"ec_outputs_ouputs_mask: {enc_outputs_outputs_mask.shape}")# 2,8400,160,160
+        refpoint_cxcy_unsig_undetech_unselected = self._bbox_embed(output_memory) + reference_point
+
+        _, _, grid_dim_1, grid_dim_2 = enc_outputs_outputs_mask.shape
+        tgt_undetach = torch.gather(output_memory, 1,
+                                  topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
+        mask_undetach = torch.gather(enc_outputs_outputs_mask, 1,
+                                  topk_proposals.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, grid_dim_1, grid_dim_2))  # unsigmoid
+        refpoint_embed_unsig_undetach = torch.gather(refpoint_cxcy_unsig_undetech_unselected, 1,
+                                            topk_proposals.unsqueeze(-1).repeat(1, 1, 4))  # unsigmoid       
+        # Use anchor points
+
+        # refpoint_cxcy = self._bbox_embed(output_memory)
+
+        output = tgt_undetach.permute(1, 0, 2).detach()
+        refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 2
+        
+        interm_outputs=dict()
+        interm_outputs['pred_logits'] = enc_outputs_class_unselected
+        interm_outputs['pred_masks'] = enc_outputs_outputs_mask
+        interm_outputs['pred_boxes'] = refpoint_cxcy_unsig_undetech_unselected.sigmoid()
+        # print('modify here')
+
+
+        # topk = self.num_queries
+        # hid_dim = src[-1].shape[-1]
         predictions_class = []
         predictions_mask = []
+        predictions_box = []
 
         # prediction heads on learnable query features
         outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
         predictions_class.append(outputs_class)
         predictions_mask.append(outputs_mask)
 
+        reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
+        delta_unsig = self._bbox_embed(output)
+        outputs_unsig = delta_unsig + reference_before_sigmoid
+        new_reference_points = outputs_unsig.sigmoid()
+
+        refpoint_embed = new_reference_points.detach()
+        predictions_box.append(new_reference_points.transpose(0, 1))
+
+        # ***************visualize*********************
+        # save = {
+        #     'topk':topk_proposals,
+        #     'feature':x,
+        #     'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
+        #     'enc_mask': mask_undetach.detach(),
+        #     'all_mask': enc_outputs_outputs_mask.detach(),
+        #     'attn_mask': attn_mask.detach(),
+        # }
+        # print(f"saveing")
+        # torch.save(save, '685_vis.pth')
+        # ***************visualize*********************
+
         for i in range(self.num_layers):
+            if True:
+                # flaten_mask = outputs_mask.detach().flatten(0, 1)
+                
+                # # Filter mask
+                # # pos_mask = filter_mask(outputs_mask.detach())
+                # # flaten_mask = pos_mask.flatten(0, 1)
+
+                
+                # h, w = outputs_mask.shape[-2:]
+                # # follow maskdino initialize_box_type == 'mask2box':  # faster conversion
+                # refpoint_embed = box_ops.masks_to_boxes(flaten_mask > 0).cuda()
+                # refpoint_embed = box_ops.box_xyxy_to_cxcywh(refpoint_embed) / torch.as_tensor([w, h, w, h],
+                #                                                                                     dtype=torch.float).cuda()
+                # refpoint_embed = refpoint_embed.reshape(outputs_mask.shape[0], outputs_mask.shape[1], 4) # bs,query,4
+                # # refpoint_embed = refpoint_embed[..., :2].transpose(0, 1) # query,bs 2
+                # refpoint_embed = refpoint_embed.transpose(0, 1) # query,bs 4
+                
+
+                # only cx,cy
+                query_sine_embed = self._gen_sineembed_for_position(refpoint_embed) # nq, bs, 256*2
+
+                raw_query_pos = self.ref_point_head(query_sine_embed)  # nq, bs, 256
+                pos_scale = self.query_scale(output) if self.query_scale is not None else 1
+                query_pos = pos_scale * raw_query_pos
+                query_embed = query_pos
+            #****************************************************************
+            # if i == 0:
+            # query_embed = torch.zeros_like(query_embed)
+            # output = torch.zeros_like(output)
+                # output = torch.zeros_like(output)
             level_index = i % self.num_feature_levels
             attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
-            # attention: cross-attention first
-            output = self.transformer_cross_attention_layers[i](
-                output, src[level_index],
-                memory_mask=attn_mask,
-                memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                pos=pos[level_index], query_pos=query_embed
-            )
 
             output = self.transformer_self_attention_layers[i](
                 output, tgt_mask=None,
@@ -410,12 +527,29 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 query_pos=query_embed
             )
             
+            # attention: cross-attention first
+            output = self.transformer_cross_attention_layers[i](
+                output, src[level_index],
+                memory_mask=attn_mask,
+                memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                pos=pos[level_index], query_pos=query_embed
+            )
             # FFN
             output = self.transformer_ffn_layers[i](
                 output
             )
 
             outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
+
+            if self.bbox_embed is not None:
+                reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
+                delta_unsig = self.bbox_embed[i](output)
+                outputs_unsig = delta_unsig + reference_before_sigmoid
+                new_reference_points = outputs_unsig.sigmoid()
+
+                refpoint_embed = new_reference_points.detach()
+                # if layer_id != self.num_layers - 1:
+                predictions_box.append(new_reference_points.transpose(0, 1))
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
@@ -424,9 +558,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         out = {
             'pred_logits': predictions_class[-1],
             'pred_masks': predictions_mask[-1],
+            'pred_boxes': predictions_box[-1],
             'aux_outputs': self._set_aux_loss(
-                predictions_class if self.mask_classification else None, predictions_mask
-            )
+                predictions_class if self.mask_classification else None, predictions_mask, predictions_box
+            ),
+            'interm_outputs': interm_outputs
         }
         return out
 
@@ -446,16 +582,49 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         attn_mask = attn_mask.detach()
 
         return outputs_class, outputs_mask, attn_mask
+    def _gen_sineembed_for_position(self, pos_tensor):
+        # n_query, bs, _ = pos_tensor.size()
+        # sineembed_tensor = torch.zeros(n_query, bs, 256)
+        scale = 2 * math.pi
+        dim_t = torch.arange(128, dtype=torch.float32, device=pos_tensor.device)
+        dim_t = 10000 ** (2 * torch.div(dim_t, 2,rounding_mode='trunc') / 128)
+        x_embed = pos_tensor[:, :, 0] * scale
+        y_embed = pos_tensor[:, :, 1] * scale
+        pos_x = x_embed[:, :, None] / dim_t
+        pos_y = y_embed[:, :, None] / dim_t
+        pos_x = torch.stack((pos_x[:, :, 0::2].sin(), pos_x[:, :, 1::2].cos()), dim=3).flatten(2)
+        pos_y = torch.stack((pos_y[:, :, 0::2].sin(), pos_y[:, :, 1::2].cos()), dim=3).flatten(2)
+        if pos_tensor.size(-1) == 2:
+            pos = torch.cat((pos_y, pos_x), dim=2)
+        elif pos_tensor.size(-1) == 4:
+            w_embed = pos_tensor[:, :, 2] * scale
+            pos_w = w_embed[:, :, None] / dim_t
+            pos_w = torch.stack((pos_w[:, :, 0::2].sin(), pos_w[:, :, 1::2].cos()), dim=3).flatten(2)
 
+            h_embed = pos_tensor[:, :, 3] * scale
+            pos_h = h_embed[:, :, None] / dim_t
+            pos_h = torch.stack((pos_h[:, :, 0::2].sin(), pos_h[:, :, 1::2].cos()), dim=3).flatten(2)
+
+            pos = torch.cat((pos_y, pos_x, pos_w, pos_h), dim=2)
+        else:
+            raise ValueError("Unknown pos_tensor shape(-1):{}".format(pos_tensor.size(-1)))
+        return pos
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_seg_masks):
+    def _set_aux_loss(self, outputs_class, outputs_seg_masks, out_boxes=None):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
         if self.mask_classification:
-            return [
-                {"pred_logits": a, "pred_masks": b}
-                for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
-            ]
+            if out_boxes is None:
+                return [
+                    {"pred_logits": a, "pred_masks": b}
+                    for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
+                ]
+            else:
+                return [
+                    {"pred_logits": a, "pred_masks": b, "pred_boxes": c}
+                    for a, b, c in zip(outputs_class[:-1], outputs_seg_masks[:-1], out_boxes[:-1])
+                ]
         else:
             return [{"pred_masks": b} for b in outputs_seg_masks[:-1]]
+

@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from detectron2.config import configurable
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
-from detectron2.structures import BitMasks, Instances
+from detectron2.structures import BitMasks, Instances, Boxes
 
 from .mask_former_semantic_dataset_mapper import MaskFormerSemanticDatasetMapper
 
@@ -154,11 +154,13 @@ class MaskFormerPanopticDatasetMapper(MaskFormerSemanticDatasetMapper):
         if len(masks) == 0:
             # Some image does not have annotation (all ignored)
             instances.gt_masks = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
+            instances.gt_boxes = Boxes(np.zeros((0, 4)))
         else:
             masks = BitMasks(
                 torch.stack([torch.from_numpy(np.ascontiguousarray(x.copy())) for x in masks])
             )
             instances.gt_masks = masks.tensor
+            instances.gt_boxes = masks.get_bounding_boxes()
 
         dataset_dict["instances"] = instances
 
