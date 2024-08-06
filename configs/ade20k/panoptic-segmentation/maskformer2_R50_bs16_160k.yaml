@@ -24,7 +24,7 @@ MODEL:
     MASK_WEIGHT: 5.0
     DICE_WEIGHT: 5.0
     HIDDEN_DIM: 256
-    NUM_OBJECT_QUERIES: 100
+    NUM_OBJECT_QUERIES: 300
     NHEADS: 8
     DROPOUT: 0.0
     DIM_FEEDFORWARD: 2048
@@ -42,5 +42,5 @@ MODEL:
       PANOPTIC_ON: True
       OVERLAP_THRESHOLD: 0.8
       OBJECT_MASK_THRESHOLD: 0.25
-OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_Anchor_pointloss_selfattnfirst_test
+OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_v2_selfattnfirst_300q 
 SEED: 24975392

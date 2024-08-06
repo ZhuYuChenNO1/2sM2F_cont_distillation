@@ -104,7 +104,7 @@ MODEL:
     SIZE_DIVISIBILITY: 32
     TEST:
       INSTANCE_ON: false
-      OBJECT_MASK_THRESHOLD: 0.25
+      OBJECT_MASK_THRESHOLD: 0.0
       OVERLAP_THRESHOLD: 0.8
       PANOPTIC_ON: true
       SEMANTIC_ON: false
@@ -359,7 +359,7 @@ MODEL:
     QK_SCALE: null
     USE_CHECKPOINT: false
     WINDOW_SIZE: 7
-  WEIGHTS: weight/R-50.pkl
+  WEIGHTS: outputs/ade20k_panoptic_SCE_twoS_Anchor_pointloss_selfattnfirst_test_300q/model_final.pth
 OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_Anchor_pointloss_selfattnfirst_test_300q
 SEED: 24975392
 SOLVER:

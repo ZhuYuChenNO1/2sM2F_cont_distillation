@@ -341,6 +341,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # maskdino like query_pos
         self.ref_point_head = MLP(hidden_dim * 2, hidden_dim, hidden_dim, 2)
+        self.enc_output = nn.Linear(hidden_dim, hidden_dim)
+        self.encoder_norm = nn.LayerNorm(hidden_dim)
         # self.ref_point_head = MLP(hidden_dim, hidden_dim, hidden_dim, 2)
         self.query_scale = MLP(hidden_dim, hidden_dim, hidden_dim, 2)
         self._bbox_embed = _bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
@@ -407,72 +409,45 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         feats = torch.cat(src, dim=0)
         
         # Use anchor points
-        output_memory, reference_point = gen_encoder_output_proposals_p(feats.transpose(0, 1), size_list, None)
-        # output_memory = output_memory.transpose(0, 1)
-        # not use anchor points
-        # output_memory = feats.transpose(0, 1)
-
-        enc_outputs_class_unselected, enc_outputs_outputs_mask, attn_mask = self.forward_prediction_heads(
-            output_memory.transpose(0, 1), mask_features, attn_mask_target_size=size_list[0]) 
         topk = self.num_queries
         hid_dim = src[-1].shape[-1]
-        topk_proposals= torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+        output_memory, reference_point = gen_encoder_output_proposals_p(feats.transpose(0, 1), size_list, None)
+        output_memory = self.encoder_norm(self.enc_output(output_memory))
+        enc_outputs_coord_unselected = self._bbox_embed(
+            output_memory) + reference_point  # (bs, \sum{hw}, 4) unsigmoid
+        enc_outputs_class_unselected = self.class_embed(output_memory)
+        topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
 
-        # flatten_feature_size = [0]+[s[0]*s[1] for s in size_list]
-        # temp = topk//7
-        # scale = [temp,2*temp,topk-3*temp] #1:2:4        feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
-        # # scale = [1,1,topk-2] #1:2:4        feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
-        # feat_len = torch.cumsum(torch.tensor(flatten_feature_size),dim=0)
-        # topk_proposals = []
-        # for i,s in enumerate(scale):
-        #     tp = torch.topk(enc_outputs_class_unselected[:,feat_len[i]:feat_len[i+1], :-1].max(-1)[0], s, dim=1)[1]
-        #     topk_proposals.append(tp+feat_len[i])
-        # topk_proposals = torch.stack([torch.cat([t[i] for t in topk_proposals]) for i in range(bs)])
-        
-        
-        # print(f"feats.permute(1, 0, 2):{feats.permute(1, 0, 2).shape}")#2,8400,256
-        # print(f"ec_outputs_ouputs_mask: {enc_outputs_outputs_mask.shape}")# 2,8400,160,160
-        refpoint_cxcy_unsig_undetech_unselected = self._bbox_embed(output_memory) + reference_point
-
-        _, _, grid_dim_1, grid_dim_2 = enc_outputs_outputs_mask.shape
         tgt_undetach = torch.gather(output_memory, 1,
                                   topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
-        mask_undetach = torch.gather(enc_outputs_outputs_mask, 1,
-                                  topk_proposals.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, grid_dim_1, grid_dim_2))  # unsigmoid
-        refpoint_embed_unsig_undetach = torch.gather(refpoint_cxcy_unsig_undetech_unselected, 1,
-                                            topk_proposals.unsqueeze(-1).repeat(1, 1, 4))  # unsigmoid       
-        # Use anchor points
-
-        # refpoint_cxcy = self._bbox_embed(output_memory)
-
+        refpoint_embed_unsig_undetach = torch.gather(enc_outputs_coord_unselected, 1,
+                                                topk_proposals.unsqueeze(-1).repeat(1, 1, 4))  # unsigmoid
+        enc_output_class, enc_outputs_mask, attn_mask = self.forward_prediction_heads(
+            tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
         output = tgt_undetach.permute(1, 0, 2).detach()
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 2
         
         interm_outputs=dict()
-        interm_outputs['pred_logits'] = enc_outputs_class_unselected
-        interm_outputs['pred_masks'] = enc_outputs_outputs_mask
-        interm_outputs['pred_boxes'] = refpoint_cxcy_unsig_undetech_unselected.sigmoid()
+        interm_outputs['pred_logits'] = enc_output_class
+        interm_outputs['pred_masks'] = enc_outputs_mask
+        interm_outputs['pred_boxes'] = refpoint_embed_unsig_undetach.sigmoid()
         # print('modify here')
-
-
-        # topk = self.num_queries
-        # hid_dim = src[-1].shape[-1]
         predictions_class = []
         predictions_mask = []
         predictions_box = []
 
         # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
-        predictions_class.append(outputs_class)
-        predictions_mask.append(outputs_mask)
+        # outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
+        # predictions_class.append(outputs_class)
+        # predictions_mask.append(outputs_mask)
 
-        reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
-        delta_unsig = self._bbox_embed(output)
-        outputs_unsig = delta_unsig + reference_before_sigmoid
-        new_reference_points = outputs_unsig.sigmoid()
+        # reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
+        # delta_unsig = self._bbox_embed(output)
+        # outputs_unsig = delta_unsig + reference_before_sigmoid
+        # new_reference_points = outputs_unsig.sigmoid()
 
-        refpoint_embed = new_reference_points.detach()
-        predictions_box.append(new_reference_points.transpose(0, 1))
+        # refpoint_embed = new_reference_points.detach()
+        # predictions_box.append(new_reference_points.transpose(0, 1))
 
         # ***************visualize*********************
         # save = {
@@ -514,10 +489,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 query_pos = pos_scale * raw_query_pos
                 query_embed = query_pos
             #****************************************************************
-            # if i == 0:
-            # query_embed = torch.zeros_like(query_embed)
-            # output = torch.zeros_like(output)
-                # output = torch.zeros_like(output)
             level_index = i % self.num_feature_levels
             attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
 
@@ -553,7 +524,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
-        assert len(predictions_class) == self.num_layers + 1
+        # assert len(predictions_class) == self.num_layers + 1
+        assert len(predictions_class) == self.num_layers
+
 
         out = {
             'pred_logits': predictions_class[-1],
