@@ -11,6 +11,7 @@ from torch import nn
 from torch.cuda.amp import autocast
 
 from detectron2.projects.point_rend.point_features import point_sample
+from .transformer_decoder.utils.box_ops import generalized_box_iou, box_cxcywh_to_xyxy
 
 
 def batch_dice_loss(inputs: torch.Tensor, targets: torch.Tensor):
@@ -89,6 +90,7 @@ class HungarianMatcher(nn.Module):
         self.cost_mask = cost_mask
         self.cost_dice = cost_dice
         self.cost_box = cost_mask
+        self.cost_giou = 2.0
 
         assert cost_class != 0 or cost_mask != 0 or cost_dice != 0, "all costs cant be 0"
 
@@ -103,6 +105,7 @@ class HungarianMatcher(nn.Module):
         # For ADE20k dataset
         stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
             54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
+        # stuff_idx = np.array([])
         # Iterate through batch size
         for b in range(bs):
             # tgt_bbox=targets[b]["boxes"][...,-2:]
@@ -110,13 +113,17 @@ class HungarianMatcher(nn.Module):
             if 'pred_boxes' in outputs:
                 out_bbox = outputs["pred_boxes"][b]
                 cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
+                cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
                 tgt_ids = targets[b]["labels"]
                 isthing = ~np.isin(tgt_ids.cpu().numpy(), stuff_idx)
+                cost_giou[:, ~isthing] = cost_giou[:, isthing].mean()
                 cost_bbox[:, ~isthing] = cost_bbox[:, isthing].mean()
+                cost_giou[cost_giou.isnan()] = 0.0
                 cost_bbox[cost_bbox.isnan()] = 0.0
             else:
                 cost_bbox = torch.tensor(0).to(tgt_bbox.device)
+                cost_giou = torch.tensor(0).to(tgt_bbox.device)
 
             # out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
             # tgt_ids = targets[b]["labels"]
@@ -170,6 +177,7 @@ class HungarianMatcher(nn.Module):
                 + self.cost_class * cost_class
                 + self.cost_dice * cost_dice
                 + self.cost_box * cost_bbox
+                + self.cost_giou * cost_giou
             )
             C = C.reshape(num_queries, -1).cpu()
 

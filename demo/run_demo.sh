@@ -17,6 +17,6 @@ output_path="./${filename%.*}"
 # 执行命令
 python demo.py --config-file /public/home/zhuyuchen530/projects/cvpr24/2sM2F/configs/ade20k/panoptic-segmentation/maskformer2_R50_bs16_160k.yaml \
  --input "${base_path}${filename}" --output "${output_path}" \
- --opts MODEL.WEIGHTS "/public/home/zhuyuchen530/projects/cvpr24/2sM2F/outputs/ade20k_panoptic_SCE_twoS_Anchor_pointloss/model_0019999.pth"
+ --opts MODEL.WEIGHTS "/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/outputs/ade20k_panoptic_SCE_twoS_v2_selfattnfirst_100q/model_final.pth"
 
 echo "命令执行完成"

@@ -454,8 +454,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         #     'topk':topk_proposals,
         #     'feature':x,
         #     'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
-        #     'enc_mask': mask_undetach.detach(),
-        #     'all_mask': enc_outputs_outputs_mask.detach(),
+        #     'enc_mask': enc_outputs_mask.detach(),
         #     'attn_mask': attn_mask.detach(),
         # }
         # print(f"saveing")
