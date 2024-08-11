@@ -1,2 +1,2 @@
-python train_net.py --num-gpus 4  --config-file configs/ade20k/panoptic-segmentation/maskformer2_R50_bs16_160k.yaml\
- --eval-only MODEL.WEIGHTS outputs/ade20k_panoptic_SCE_twoS_Anchor_pointloss_selfattnfirst_test_300q/model_final.pth
+python train_net.py --num-gpus 8  --config-file configs/ade20k/panoptic-segmentation/maskformer2_R50_bs16_160k.yaml\
+ --eval-only MODEL.WEIGHTS outputs/ade20k_panoptic_SCE_twoS_v2_selfattnfirst_100q_lr/model_final.pth
