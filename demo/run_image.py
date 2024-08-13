@@ -219,41 +219,34 @@ output = '/inspurfs/group/yangsb/zhuyuchen/2stage_analyse/v2better/mask2former_2
 with open(anno, 'r') as f:
     data = json.load(f)
 
-anno_list = data['annotations']
-image_list = {}
-for anno_per_img in anno_list:
-    for an in anno_per_img['segments_info']:
-        idx = an['category_id']
-        if idx in ids:
-            if idx not in image_list:
-                image_list[idx] = []
-            if anno_per_img['file_name'] not in image_list[idx]:
-                image_list[idx].append(anno_per_img['file_name'])
-image_list = dict(sorted(image_list.items()))
-
+# anno_list = data['annotations']
+# image_list = {}
+# for anno_per_img in anno_list:
+#     for an in anno_per_img['segments_info']:
+#         idx = an['category_id']
+#         if idx in ids:
+#             if idx not in image_list:
+#                 image_list[idx] = []
+#             if anno_per_img['file_name'] not in image_list[idx]:
+#                 image_list[idx].append(anno_per_img['file_name'])
+# image_list = dict(sorted(image_list.items()))
+image_list = ['ADE_val_00000006.png','ADE_val_00000004.png','ADE_val_00000249.png','ADE_val_00000219.png','ADE_val_00000232.png'\
+    ,'ADE_val_00000902.png','ADE_val_00001188.png','ADE_val_00001399.png','ADE_val_00000647.png','ADE_val_00000685.png'\
+        ,'ADE_val_00000011.png','ADE_val_00000043.png','ADE_val_00000056.png','ADE_val_00000076.png','ADE_val_00001890.png']
 print(image_list)
-for i in ids[::-1]:
-    name = ADE20K_150_CATEGORIES[i]['name']
-    name = ''.join(name.split())
-    output_floder = os.path.join(output, name)
-    if not os.path.exists(output_floder):
-        os.makedirs(output_floder)
+for j, img in enumerate(image_list):
+    gt_img_name = img.split('.')[0] + '_gt' + '.jpg'
+    img = img.split('.')[0] + '.jpg'
+    gt = os.path.join(gt_vis, img)
 
-    for j, img in enumerate(image_list[i]):
-        if j >10:
-            break
-        gt_img_name = img.split('.')[0] + '_gt' + '.jpg'
-        img = img.split('.')[0] + '.jpg'
-        gt = os.path.join(gt_vis, img)
+    with open('twostageinfo/filename.txt', 'w')as f:
+        f.write(img)
+    with open('twostageinfo/filename.txt', 'r')as f:
+        a = f.readline()
+        print(a)
 
-        with open('twostageinfo/filename.txt', 'w')as f:
-            f.write(img)
-        with open('twostageinfo/filename.txt', 'r')as f:
-            a = f.readline()
-            print(a)
-
-        if os.path.exists(gt):
-            subprocess.run(f'bash run_demo.sh {img} {name}', shell=True)
-            # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
-        else:
-            print(f'{gt} not exists')
+    if os.path.exists(gt):
+        subprocess.run(f'bash run_demo.sh {img}', shell=True)
+        # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
+    else:
+        print(f'{gt} not exists')

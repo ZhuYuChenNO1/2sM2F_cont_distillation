@@ -15,6 +15,7 @@ from .maskformer_transformer_decoder import TRANSFORMER_DECODER_REGISTRY
 from .utils import box_ops
 from .utils.utils import gen_encoder_output_proposals_p, inverse_sigmoid
 import math
+import os
 
 def sigmoid_to_logit(x):
     x = x.clamp(0.001, 0.999)
@@ -450,15 +451,29 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # predictions_box.append(new_reference_points.transpose(0, 1))
 
         # ***************visualize*********************
-        # save = {
-        #     'topk':topk_proposals,
-        #     'feature':x,
-        #     'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
-        #     'enc_mask': enc_outputs_mask.detach(),
-        #     'attn_mask': attn_mask.detach(),
-        # }
-        # print(f"saveing")
-        # torch.save(save, '685_vis.pth')
+        try:
+            with open('twostageinfo/filename.txt', 'r')as f:
+                filename = f.readline()
+        except:
+            filename = 'None'
+        path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth'
+        if os.path.exists(path_):
+            save = torch.load(path_)
+        else:
+            save = {}
+        temp = {
+            filename:{
+                'name': filename,
+                'topk':topk_proposals,
+                'feature':x,
+                'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
+                'enc_mask': enc_outputs_mask.detach(),
+                'attn_mask': attn_mask.detach(),
+            }
+        }
+        save.update(temp)
+        print(f"saveing")
+        torch.save(save,path_)
         # ***************visualize*********************
 
         for i in range(self.num_layers):
