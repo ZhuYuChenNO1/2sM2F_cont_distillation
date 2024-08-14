@@ -42,5 +42,5 @@ MODEL:
       PANOPTIC_ON: True
       OVERLAP_THRESHOLD: 0.8
       OBJECT_MASK_THRESHOLD: 0.25
-OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_v2_crossattnfirst_100q_lr 
+OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_v2_100q_lr_norm 
 # SEED: 24975392

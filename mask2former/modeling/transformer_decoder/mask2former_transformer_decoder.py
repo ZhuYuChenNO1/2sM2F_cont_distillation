@@ -416,8 +416,12 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         output_memory = self.encoder_norm(self.enc_output(output_memory))
         enc_outputs_coord_unselected = self._bbox_embed(
             output_memory) + reference_point  # (bs, \sum{hw}, 4) unsigmoid
-        enc_outputs_class_unselected = self.class_embed(output_memory)
+        enc_outputs_class_unselected = self.class_embed(self.decoder_norm(output_memory))  # (bs, \sum{hw}, num_classes)
+        # enc_outputs_class_unselected = self.class_embed(output_memory)  # (bs, \sum{hw}, num_classes)
         topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+
+        # ret_enc_class = torch.gather(enc_outputs_class_unselected, 1,
+        #                              topk_proposals.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
 
         tgt_undetach = torch.gather(output_memory, 1,
                                   topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
@@ -437,6 +441,10 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
         predictions_box = []
 
+        # temp = {'ret_enc_class': ret_enc_class.detach(),
+        # 'encoder_class': enc_output_class.detach(),}
+        # torch.save(temp, 'twostageinfo/temp.pth')
+        # exit()
         # prediction heads on learnable query features
         # outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
         # predictions_class.append(outputs_class)
@@ -451,29 +459,29 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # predictions_box.append(new_reference_points.transpose(0, 1))
 
         # ***************visualize*********************
-        try:
-            with open('twostageinfo/filename.txt', 'r')as f:
-                filename = f.readline()
-        except:
-            filename = 'None'
-        path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth'
-        if os.path.exists(path_):
-            save = torch.load(path_)
-        else:
-            save = {}
-        temp = {
-            filename:{
-                'name': filename,
-                'topk':topk_proposals,
-                'feature':x,
-                'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
-                'enc_mask': enc_outputs_mask.detach(),
-                'attn_mask': attn_mask.detach(),
-            }
-        }
-        save.update(temp)
-        print(f"saveing")
-        torch.save(save,path_)
+        # try:
+        #     with open('twostageinfo/filename.txt', 'r')as f:
+        #         filename = f.readline()
+        # except:
+        #     filename = 'None'
+        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth'
+        # if os.path.exists(path_):
+        #     save = torch.load(path_)
+        # else:
+        #     save = {}
+        # temp = {
+        #     filename:{
+        #         'name': filename,
+        #         'topk':topk_proposals,
+        #         'feature':x,
+        #         'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
+        #         'enc_mask': enc_outputs_mask.detach(),
+        #         'attn_mask': attn_mask.detach(),
+        #     }
+        # }
+        # save.update(temp)
+        # print(f"saveing")
+        # torch.save(save,path_)
         # ***************visualize*********************
 
         for i in range(self.num_layers):
@@ -551,6 +559,15 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             ),
             'interm_outputs': interm_outputs
         }
+        # out = {
+        #     'pred_logits': interm_outputs['pred_logits'],
+        #     'pred_masks': interm_outputs['pred_masks'],
+        #     'pred_boxes': interm_outputs['pred_boxes'],
+        #     'aux_outputs': self._set_aux_loss(
+        #         predictions_class if self.mask_classification else None, predictions_mask, predictions_box
+        #     ),
+        #     'interm_outputs': interm_outputs
+        # }
         return out
 
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):

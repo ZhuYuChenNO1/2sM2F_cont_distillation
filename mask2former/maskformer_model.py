@@ -303,15 +303,15 @@ class MaskFormer(nn.Module):
         keep = labels.ne(self.sem_seg_head.num_classes) & (scores > self.object_mask_threshold)
         
         # ***************visualize*********************
-        try:
-            with open('twostageinfo/filename.txt', 'r')as f:
-                filename = f.readline()
-        except:
-            filename = 'None'
-        path_="/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth"
-        save = torch.load(path_)
-        save[filename].update({'keep':keep})
-        torch.save(save, path_)
+        # try:
+        #     with open('twostageinfo/filename.txt', 'r')as f:
+        #         filename = f.readline()
+        # except:
+        #     filename = 'None'
+        # path_="/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth"
+        # save = torch.load(path_)
+        # save[filename].update({'keep':keep})
+        # torch.save(save, path_)
         # ***************visualize*********************
 
         T = 0.06 
