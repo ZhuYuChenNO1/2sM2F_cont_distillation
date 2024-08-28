@@ -1,2 +1,4 @@
-python train_net.py --num-gpus 8  --config-file configs/ade20k/panoptic-segmentation/maskformer2_R50_bs16_160k.yaml\
- --eval-only MODEL.WEIGHTS outputs/ade20k_panoptic_SCE_twoS_v2_selfattnfirst_100q_lr/model_final.pth
+for t in 6; do
+  python train_continual.py --dist-url auto --eval-only --num-gpus 8 --config-file configs/ade20k/panoptic-segmentation/100-10_inc.yaml \
+  CONT.TASK ${t} SOLVER.BASE_LR 0.00005 SOLVER.MAX_ITER 10000 MODEL.MASK_FORMER.USE_TEXT_EMBEDDING False OUTPUT_DIR ./output/ps/100-10_all_clsembed_psdthresh_lr0.5_10k/step${t}
+done

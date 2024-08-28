@@ -27,14 +27,14 @@ SOLVER:
   LR_SCHEDULER_NAME: "WarmupMultiStepLR"
   STEPS: (135000,150000)
   BACKBONE_MULTIPLIER: 0.1
-  CHECKPOINT_PERIOD: 10000
+  CHECKPOINT_PERIOD: 100000
   CLIP_GRADIENTS:
     ENABLED: True
     CLIP_TYPE: "full_model"
     CLIP_VALUE: 0.01
     NORM_TYPE: 2.0
   AMP:
-    ENABLED: False
+    ENABLED: True
 INPUT:
   MIN_SIZE_TRAIN: !!python/object/apply:eval ["[int(x * 0.1 * 640) for x in range(5, 21)]"]
   MIN_SIZE_TRAIN_SAMPLING: "choice"

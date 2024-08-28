@@ -3,7 +3,11 @@ import json
 import os
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.data.datasets.builtin_meta import ADE20K_SEM_SEG_CATEGORIES
+from detectron2.data.datasets.coco import load_sem_seg
 from detectron2.utils.file_io import PathManager
+
+
 
 ADE20K_150_CATEGORIES = [
     {"color": [120, 120, 120], "id": 0, "isthing": 0, "name": "wall"},
@@ -385,6 +389,59 @@ def register_all_ade20k_panoptic(root):
             os.path.join(root, instance_json),
         )
 
+
+def register_current_ade20k_panoptic(predefined_split):
+    metadata = get_metadata()
+    for (
+        prefix,
+        (image_root, panoptic_root, panoptic_json, semantic_root, instance_json),
+    ) in predefined_split.items():
+        # The "standard" version of COCO panoptic segmentation dataset,
+        # e.g. used by Panoptic-DeepLab
+        register_ade20k_panoptic(
+            prefix,
+            metadata,
+            image_root,
+            panoptic_root,
+            semantic_root,
+            panoptic_json,
+            instance_json,
+        )
+
+
+def register_complete_ade20k_sem(root):
+    root = os.path.join(root, "ADEChallengeData2016")
+    for name, dirname in [("train", "training"), ("val", "validation")]:
+        image_dir = os.path.join(root, "images", dirname)
+        gt_dir = os.path.join(root, "annotations_detectron2", dirname)
+        name = f"complete_ade20k_sem_seg_{name}"
+        DatasetCatalog.register(
+            name, lambda x=image_dir, y=gt_dir: load_sem_seg(y, x, gt_ext="png", image_ext="jpg")
+        )
+        MetadataCatalog.get(name).set(
+            stuff_classes=ADE20K_SEM_SEG_CATEGORIES[:],
+            image_root=image_dir,
+            sem_seg_root=gt_dir,
+            evaluator_type="sem_seg",
+            ignore_label=255,
+        )
+
+def register_mem_ade20k_sem(image_root, gt_root):
+    image_root = os.path.join(image_root, "ADEChallengeData2016")
+    for name, dirname in [("train", "training")]:
+        image_dir = os.path.join(image_root, "images", dirname)
+        gt_dir = gt_root
+        name = f"memory_ade20k_sem_seg_{name}"
+        DatasetCatalog.register(
+            name, lambda x=image_dir, y=gt_dir: load_sem_seg(y, x, gt_ext="png", image_ext="jpg")
+        )
+        MetadataCatalog.get(name).set(
+            stuff_classes=ADE20K_SEM_SEG_CATEGORIES[:],
+            image_root=image_dir,
+            sem_seg_root=gt_dir,
+            evaluator_type="sem_seg",
+            ignore_label=255,
+        )
 
 _root = os.getenv("DETECTRON2_DATASETS", "datasets")
 register_all_ade20k_panoptic(_root)

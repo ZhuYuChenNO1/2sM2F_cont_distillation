@@ -230,12 +230,12 @@ with open(anno, 'r') as f:
 #             if anno_per_img['file_name'] not in image_list[idx]:
 #                 image_list[idx].append(anno_per_img['file_name'])
 # image_list = dict(sorted(image_list.items()))
-image_list = ['ADE_val_00000006.png','ADE_val_00000004.png','ADE_val_00000249.png','ADE_val_00000219.png','ADE_val_00000232.png'\
-    ,'ADE_val_00000902.png','ADE_val_00001188.png','ADE_val_00001399.png','ADE_val_00000647.png','ADE_val_00000685.png'\
-        ,'ADE_val_00000011.png','ADE_val_00000043.png','ADE_val_00000056.png','ADE_val_00000076.png','ADE_val_00001890.png']
+# image_list = ['ADE_train_00009424.png',  "ADE_train_00009428.png",  "ADE_train_00009508.png",  \
+#     "ADE_train_00009591.png", "ADE_train_00009611.png", "ADE_train_00000308.png",  "ADE_train_00000553.png", \
+#         "ADE_train_00000576.png", "ADE_train_00000650.png",  "ADE_train_00001503.png" ]
+image_list = ["ADE_train_00000650.png"]
 print(image_list)
 for j, img in enumerate(image_list):
-    gt_img_name = img.split('.')[0] + '_gt' + '.jpg'
     img = img.split('.')[0] + '.jpg'
     gt = os.path.join(gt_vis, img)
 
@@ -245,8 +245,9 @@ for j, img in enumerate(image_list):
         a = f.readline()
         print(a)
 
-    if os.path.exists(gt):
-        subprocess.run(f'bash run_demo.sh {img}', shell=True)
-        # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
-    else:
-        print(f'{gt} not exists')
+    subprocess.run(f'bash run_demo.sh {img}', shell=True)
+    # if os.path.exists(gt):
+    #     subprocess.run(f'bash run_demo.sh {img}', shell=True)
+    #     # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
+    # else:
+    #     print(f'{gt} not exists')

@@ -11,8 +11,9 @@ import torch
 from detectron2.data import MetadataCatalog
 from detectron2.engine.defaults import DefaultPredictor
 from detectron2.utils.video_visualizer import VideoVisualizer
-from detectron2.utils.visualizer import ColorMode
+# from detectron2.utils.visualizer import ColorMode
 from tools.visualizer import Visualizer
+from tools.visualizer import ColorMode
 
 class VisualizationDemo(object):
     def __init__(self, cfg, instance_mode=ColorMode.IMAGE, parallel=False):

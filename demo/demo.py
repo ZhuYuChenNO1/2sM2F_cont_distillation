@@ -26,6 +26,7 @@ from detectron2.utils.logger import setup_logger
 from mask2former import add_maskformer2_config
 from predictor import VisualizationDemo
 
+from continual import add_continual_config, Trainer
 
 # constants
 WINDOW_NAME = "mask2former demo"
@@ -36,6 +37,7 @@ def setup_cfg(args):
     cfg = get_cfg()
     add_deeplab_config(cfg)
     add_maskformer2_config(cfg)
+    add_continual_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

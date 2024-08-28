@@ -50,6 +50,12 @@ def add_maskformer2_config(cfg):
     cfg.MODEL.MASK_FORMER.TRANSFORMER_IN_FEATURE = "res5"
     cfg.MODEL.MASK_FORMER.ENFORCE_INPUT_PROJ = False
 
+    # text embedding config
+    cfg.MODEL.MASK_FORMER.USE_TEXT_EMBEDDING = False
+    cfg.MODEL.MASK_FORMER.TEXT_PATH = ""
+    cfg.MODEL.MASK_FORMER.CLIP_DIM = 512
+    
+
     # mask_former inference config
     cfg.MODEL.MASK_FORMER.TEST = CN()
     cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON = True

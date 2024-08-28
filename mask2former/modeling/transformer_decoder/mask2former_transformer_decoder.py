@@ -16,7 +16,10 @@ from .utils import box_ops
 from .utils.utils import gen_encoder_output_proposals_p, inverse_sigmoid
 import math
 import os
+from torch.utils.tensorboard import SummaryWriter
+import numpy as np
 
+    
 def sigmoid_to_logit(x):
     x = x.clamp(0.001, 0.999)
     return torch.log(x / (1-x))
@@ -254,6 +257,10 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         pre_norm: bool,
         mask_dim: int,
         enforce_input_project: bool,
+        n_cls_in_tasks: list,
+        text_path: str,
+        use_text_embedding: False,
+        clip_embedding_dim: int,
     ):
         """
         NOTE: this interface is experimental.
@@ -277,6 +284,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         assert mask_classification, "Only support mask classification model"
         self.mask_classification = mask_classification
 
+        # self.writer = SummaryWriter(log_dir="runs/nopsd")
         # positional encoding
         N_steps = hidden_dim // 2
         self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
@@ -320,9 +328,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         self.num_queries = num_queries
         # learnable query features
-        self.query_feat = nn.Embedding(num_queries, hidden_dim)
+        # self.query_feat = nn.Embedding(num_queries, hidden_dim)
         # learnable query p.e.
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        # self.query_embed = nn.Embedding(num_queries, hidden_dim)
 
         # level embedding (we always use 3 scales)
         self.num_feature_levels = 3
@@ -336,8 +344,36 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 self.input_proj.append(nn.Sequential())
 
         # output FFNs
+        self.use_text_embedding = use_text_embedding
         if self.mask_classification:
-            self.class_embed = nn.Linear(hidden_dim, num_classes)
+            if use_text_embedding:
+                # learn form https://github.com/bytedance/fc-clip/blob/main/fcclip/modeling/transformer_decoder/fcclip_transformer_decoder.py#L385
+                self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+                self.dim_adaptor = MLP(hidden_dim, hidden_dim, clip_embedding_dim, 3)
+                text_embedding = np.load(text_path)
+                self.text_embedding = []
+                for i, n_cls in enumerate(n_cls_in_tasks):
+                    old_cls = np.int32(np.sum(n_cls_in_tasks[:i]))
+                    self.text_embedding.append(torch.from_numpy(text_embedding[old_cls:old_cls+n_cls]))
+                self.text_embedding = torch.cat(self.text_embedding, dim=0).to(torch.device('cuda'))
+                self.text_embedding.requires_grad = False
+            else:
+                # Use static class head
+                self.class_embed = nn.Linear(hidden_dim, 150)
+                
+                
+                # Use incremental class head
+                # self.class_embeds = nn.ModuleList()
+                # for i, n_cls in enumerate(n_cls_in_tasks):
+                #     self.class_embeds.append(nn.Linear(hidden_dim, n_cls))
+                # Initialize the new linear weights
+                # if len(n_cls_in_tasks) > 1:
+                #     # meanHead = torch.mean(self.class_embeds[0].weight.data, dim=0, keepdim=True)
+                #     selectedBysimilarity = [43, 54, 83, 76, 47, 96, 86, 50, 94, 37]
+                #     for i in range(1, len(n_cls_in_tasks)):
+                #         self.class_embeds[i].weight.data.copy_(self.class_embeds[0].weight.data[selectedBysimilarity])
+
+        self.n_cls_in_tasks = n_cls_in_tasks
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
         # maskdino like query_pos
@@ -353,7 +389,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         self.bbox_embed = nn.ModuleList(box_embed_layerlist)
         # self.bbox_embed = None
     
-
+        self.count = 0
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
         ret = {}
@@ -379,6 +415,19 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         ret["mask_dim"] = cfg.MODEL.SEM_SEG_HEAD.MASK_DIM
 
+        tot_cls = cfg.CONT.TOT_CLS
+        base_cls = cfg.CONT.BASE_CLS
+        inc_cls = cfg.CONT.INC_CLS
+        task = cfg.CONT.TASK
+
+        num_tasks = 1 + (tot_cls - base_cls) // inc_cls
+        n_cls_in_tasks = [base_cls] + [inc_cls] * (num_tasks - 1)
+
+        ret["n_cls_in_tasks"] = n_cls_in_tasks[:task]
+        ret['use_text_embedding'] = cfg.MODEL.MASK_FORMER.USE_TEXT_EMBEDDING
+        ret['text_path'] = cfg.MODEL.MASK_FORMER.TEXT_PATH
+        ret['clip_embedding_dim'] = cfg.MODEL.MASK_FORMER.CLIP_DIM
+
         return ret
 
     def forward(self, x, mask_features, mask = None):
@@ -403,8 +452,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         _, bs, _ = src[0].shape
 
         # QxNxC
-        query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
-        output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
+        # query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
+        # output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
         
         # Two stage
         feats = torch.cat(src, dim=0)
@@ -416,12 +465,73 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         output_memory = self.encoder_norm(self.enc_output(output_memory))
         enc_outputs_coord_unselected = self._bbox_embed(
             output_memory) + reference_point  # (bs, \sum{hw}, 4) unsigmoid
-        enc_outputs_class_unselected = self.class_embed(self.decoder_norm(output_memory))  # (bs, \sum{hw}, num_classes)
+        if self.use_text_embedding:
+            logit_scale = torch.clamp(self.logit_scale.exp(), max=100.0)
+            output_memory_cls = self.dim_adaptor(self.decoder_norm(output_memory))
+            # output_memory_cls = self.dim_adaptor(output_memory)
+            output_memory_cls = output_memory_cls / (output_memory_cls.norm(dim=-1, keepdim=True) + 1e-7)
+            enc_outputs_class_unselected = logit_scale * output_memory_cls @ self.text_embedding.T # (bs, \sum{hw}, 100)
+            # enc_outputs_class_unselected[reference_point.sum(-1).isinf()] = float("-inf")
+        else:
+            # enc_outputs_class_unselected =torch.cat([class_embed(self.decoder_norm(output_memory)) for class_embed in self.class_embeds], dim=-1) # (bs, \sum{hw}, num_classes)
+            enc_outputs_class_unselected =self.class_embed(self.decoder_norm(output_memory)) # (bs, \sum{hw}, num_classes)
+            # enc_outputs_class_unselected = torch.cat((-torch.ones((bs, n_points,100), device=enc_outputs_class_unselected.device)*100, enc_outputs_class_unselected), dim=-1)
         # enc_outputs_class_unselected = self.class_embed(output_memory)  # (bs, \sum{hw}, num_classes)
+        # enc_outputs_class_unselected[..., -10:] *= 0.6
         topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
 
-        # ret_enc_class = torch.gather(enc_outputs_class_unselected, 1,
-        #                              topk_proposals.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
+        # Record the ratio of base class to new classes in query selection
+
+        
+
+        # *******************Tensorboard******************
+        # device = torch.cuda.current_device()
+        # if device == 0 and enc_outputs_class_unselected.shape[-1]>101:
+        #     idx = enc_outputs_class_unselected.max(-1)[1]
+        #     idx = torch.gather(idx, 1, topk_proposals)
+            
+        #     base = torch.sum(idx < 100)
+        #     new_logits = enc_outputs_class_unselected[..., -10:].max(-1)[0]
+        #     old_logits = enc_outputs_class_unselected[..., :-10].max(-1)[0]
+
+        #     n_topk = torch.topk(new_logits.flatten(), 100)[0].mean().detach().cpu().numpy()
+        #     o_topk = torch.topk(old_logits.flatten(), 100)[0].mean().detach().cpu().numpy()
+
+
+        #     # nv = new_logits.detach().cpu().numpy().var()
+        #     nm = new_logits.detach().cpu().numpy().mean()
+        #     # ov = old_logits.detach().cpu().numpy().var()
+        #     om = old_logits.detach().cpu().numpy().mean()
+
+        #     ratio = (len(idx.flatten())-base)/base+1
+        #     self.writer.add_scalar('New/Base', ratio, self.count)
+        #     # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
+        #     self.writer.add_scalars('Mean', {'New Mean': nm, 'Old Mean': om}, self.count)
+        #     self.writer.add_scalars('topk_Mean', {'New_top100 Mean': n_topk, 'Old_top100 Mean': o_topk}, self.count)
+    
+        #     self.count += 1
+        # *******************Tensorboard******************
+        
+        # *******************Tensorboard******************
+        # device = torch.cuda.current_device()
+        # if device == 0: 
+        #     values, idx = enc_outputs_class_unselected.max(-1)
+        #     idx = torch.gather(idx, 1, topk_proposals)
+        #     values = torch.gather(values, 1, topk_proposals)
+        #     rv = values.mean().detach().cpu().numpy()
+            
+        #     base = torch.sum(idx < 100)
+        #     new = len(idx.flatten())-base
+        #     # ratio = (len(idx.flatten())-base)/base+1
+            
+        #     # self.writer.add_scalar('topk Mean', rv, self.count)
+        #     self.writer.add_scalar('New', new , self.count)
+        #     # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
+        #     # self.writer.add_scalars('Mean', {'New Mean': nm, 'Old Mean': om}, self.count)
+        #     # self.writer.add_scalars('topk_Mean', {'New_top100 Mean': n_topk, 'Old_top100 Mean': o_topk}, self.count)
+    
+        #     self.count += 1
+        # *******************Tensorboard******************
 
         tgt_undetach = torch.gather(output_memory, 1,
                                   topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
@@ -464,7 +574,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         #         filename = f.readline()
         # except:
         #     filename = 'None'
-        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_copy/demo/twostageinfo/vis.pth'
+        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_cont/demo/twostageinfo/vis_qq.pth'
         # if os.path.exists(path_):
         #     save = torch.load(path_)
         # else:
@@ -486,7 +596,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         for i in range(self.num_layers):
             if True:
-                # flaten_mask = outputs_mask.detach().flatten(0, 1)
+                # flaten_mask = enc_outputs_mask.detach().flatten(0, 1)
                 
                 # # Filter mask
                 # # pos_mask = filter_mask(outputs_mask.detach())
@@ -573,7 +683,16 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)
-        outputs_class = self.class_embed(decoder_output)
+        bs,_, _ = decoder_output.shape
+        if self.use_text_embedding:
+            cls_decoder = self.dim_adaptor(decoder_output)
+            norm_decoder = cls_decoder / (cls_decoder.norm(dim=-1, keepdim=True) + 1e-7)
+            logit_scale = torch.clamp(self.logit_scale.exp(), max=100.0)
+            outputs_class = logit_scale*norm_decoder @ self.text_embedding.T
+        else:
+            # outputs_class = torch.cat([class_embed(decoder_output) for class_embed in self.class_embeds], dim=-1) # (bs, \sum{hw}, num_classes)
+            outputs_class = self.class_embed(decoder_output)
+            # outputs_class = torch.cat((-torch.ones((bs, 100,100), device=outputs_class.device)*100, outputs_class), dim=-1)
         mask_embed = self.mask_embed(decoder_output)
         outputs_mask = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
 

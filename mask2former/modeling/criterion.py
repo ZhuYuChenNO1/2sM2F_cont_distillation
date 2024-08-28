@@ -36,6 +36,9 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         Loss tensor
     """
     prob = inputs.sigmoid()
+    # weight = torch.ones(inputs.shape[-1]).to(inputs.device)
+    # weight[100:] = 3
+
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
     p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
@@ -124,7 +127,7 @@ class SetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses,
-                 num_points, oversample_ratio, importance_sample_ratio):
+                 num_points, oversample_ratio, importance_sample_ratio, current_catagory_ids=None):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -139,15 +142,16 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
-        empty_weight = torch.ones(self.num_classes + 1)
-        empty_weight[-1] = self.eos_coef
-        self.register_buffer("empty_weight", empty_weight)
+        # empty_weight = torch.ones(self.num_classes + 1)
+        # empty_weight[-1] = self.eos_coef
+        # self.register_buffer("empty_weight", empty_weight)
 
         # pointwise mask loss parameters
         self.num_points = num_points
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
         self.focal_alpha = 0.25
+        self.current_catagory_ids = torch.tensor(current_catagory_ids)
 
     def loss_labels_ce(self, outputs, targets, indices, num_masks):
         """Classification loss (NLL)
@@ -182,7 +186,10 @@ class SetCriterion(nn.Module):
 
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        try: 
+            target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        except:
+            raise ValueError(f"out of boundry {target_classes_onehot.shape} but got {target_classes}")
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
@@ -215,9 +222,9 @@ class SetCriterion(nn.Module):
         # target_boxes = target_boxes[:, :2]
         
         # For ADE200k
-        stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
-            54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
-        # stuff_idx = np.array([])
+        # stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
+        #     54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
+        stuff_idx = np.array([])
 
         isthing = ~np.isin(target_labels.cpu().numpy(), stuff_idx)
         target_boxes=target_boxes[isthing]
@@ -244,7 +251,11 @@ class SetCriterion(nn.Module):
         src_idx = self._get_src_permutation_idx(indices)
         tgt_idx = self._get_tgt_permutation_idx(indices)
         src_masks = outputs["pred_masks"]
-        src_masks = src_masks[src_idx]
+        try: 
+            src_masks = src_masks[src_idx]
+            # src_masks = src_masks[(0,0)]
+        except:
+            raise ValueError(f"out of boundry {src_masks.shape} but got {src_idx}")
         masks = [t["masks"] for t in targets]
         # TODO use valid to mask invalid areas due to padding in loss
         target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
@@ -308,7 +319,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_masks)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, psd_targets=None, old_targets=None, med_tokens=None, old_med_tokens=None):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -317,11 +328,41 @@ class SetCriterion(nn.Module):
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
 
+        if self.current_catagory_ids is not None:
+            # print("current_catagory_ids", self.current_catagory_ids)
+            # memory_part = [bool(
+            #     torch.logical_not(torch.isin(tgt['labels'], self.current_catagory_ids.to(tgt['labels'].device))).sum() != 0
+            # ) for tgt in targets]
+            memory_part = [bool(
+                np.logical_not(np.isin(tgt['labels'].cpu().numpy(), self.current_catagory_ids.cpu().numpy())).sum() != 0
+            ) for tgt in targets]
+        else:
+            memory_part = None
+
+        if psd_targets is None or old_targets is None:
+            complete_psd_targets = targets
+        else:
+            complete_psd_targets = []
+            for i, (p, t) in enumerate(zip(psd_targets, targets)):
+                if memory_part[i]:
+                    complete_psd_targets.append(
+                        {'labels': t['labels'], 'masks': t['masks'], 'boxes': t['boxes']}
+                    )
+                else:
+                    complete_psd_targets.append(
+                        {
+                            'labels': torch.cat([p['labels'], t['labels']]),\
+                            'masks': torch.cat([p['masks'], t['masks']]),\
+                            'boxes': torch.cat([p['boxes'], t['boxes']])
+                        }
+                    )
+
+
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        indices = self.matcher(outputs_without_aux, complete_psd_targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
-        num_masks = sum(len(t["labels"]) for t in targets)
+        num_masks = sum(len(t["labels"]) for t in complete_psd_targets)
         num_masks = torch.as_tensor(
             [num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
         )
@@ -332,21 +373,21 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_masks))
+            losses.update(self.get_loss(loss, outputs, complete_psd_targets, indices, num_masks))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, complete_psd_targets)
                 for loss in self.losses:
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks)
+                    l_dict = self.get_loss(loss, aux_outputs, complete_psd_targets, indices, num_masks)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
         
         if "interm_outputs" in outputs:
-            indices = self.matcher(outputs["interm_outputs"], targets)
+            indices = self.matcher(outputs["interm_outputs"], complete_psd_targets)
             for loss in self.losses:
-                l_dict = self.get_loss(loss, outputs["interm_outputs"], targets, indices, num_masks)
+                l_dict = self.get_loss(loss, outputs["interm_outputs"], complete_psd_targets, indices, num_masks)
                 l_dict = {'interm_' + k: v for k, v in l_dict.items()}
                 losses.update(l_dict)
 

@@ -48,6 +48,16 @@ def register_all_ade20k_instance(root):
             os.path.join(root, image_root),
         )
 
+def register_current_ade20k_instance(predefined_split):
+    for key, (image_root, json_file) in predefined_split.items():
+        # Assume pre-defined datasets live in `./datasets`.
+        register_coco_instances(
+            key,
+            _get_ade_instances_meta(),
+            json_file,
+            image_root,
+        )
+
 
 _root = os.getenv("DETECTRON2_DATASETS", "datasets")
 register_all_ade20k_instance(_root)

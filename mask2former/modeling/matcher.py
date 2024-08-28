@@ -13,6 +13,8 @@ from torch.cuda.amp import autocast
 from detectron2.projects.point_rend.point_features import point_sample
 from .transformer_decoder.utils.box_ops import generalized_box_iou, box_cxcywh_to_xyxy
 
+from torch.utils.tensorboard import SummaryWriter
+
 
 def batch_dice_loss(inputs: torch.Tensor, targets: torch.Tensor):
     """
@@ -91,10 +93,12 @@ class HungarianMatcher(nn.Module):
         self.cost_dice = cost_dice
         self.cost_box = cost_mask
         self.cost_giou = 2.0
+        self.writer = SummaryWriter(log_dir="output/ps/100-10_testclip2")
 
         assert cost_class != 0 or cost_mask != 0 or cost_dice != 0, "all costs cant be 0"
 
         self.num_points = num_points
+        self.step = 0
 
     @torch.no_grad()
     def memory_efficient_forward(self, outputs, targets):
@@ -103,9 +107,9 @@ class HungarianMatcher(nn.Module):
 
         indices = []
         # For ADE20k dataset
-        stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
-            54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
-        # stuff_idx = np.array([])
+        # stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
+        #     54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
+        stuff_idx = np.array([])
         # Iterate through batch size
         for b in range(bs):
             # tgt_bbox=targets[b]["boxes"][...,-2:]
@@ -181,6 +185,22 @@ class HungarianMatcher(nn.Module):
             )
             C = C.reshape(num_queries, -1).cpu()
 
+            # mask = self.cost_mask * cost_mask.mean()
+            # clas = self.cost_class * cost_class.mean()
+            # dice = self.cost_dice * cost_dice.mean()
+            # box = self.cost_box * cost_bbox.mean()
+            # giou = self.cost_giou * cost_giou.mean()
+            # cost = C.mean()
+            # if torch.cuda.current_device() == 0:
+            #     self.writer.add_scalars('Loss/Components', {
+            #         'Mask': mask,
+            #         'Class': clas,
+            #         'Dice': dice,
+            #         'Box': box,
+            #         'GIoU': giou,
+            #         'All':cost
+            #     }, self.step)
+            #     self.step += 1
             indices.append(linear_sum_assignment(C))
 
         return [

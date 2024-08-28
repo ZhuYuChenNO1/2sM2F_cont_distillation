@@ -1,0 +1,21 @@
+_BASE_: "swin/maskformer2_swin_large_IN21k_384_bs16_160k.yaml"
+INPUT:
+  DATASET_MAPPER_NAME: "continual_panoptic"
+DATASETS:
+  TRAIN: ("current_ade20k_panoptic_train",)
+  TEST: ("current_ade20k_panoptic_val",)
+SOLVER:
+  IMS_PER_BATCH: 8
+  BASE_LR: 0.0001
+  CHECKPOINT_PERIOD: 10000
+CONT:
+  SETTING: "overlapped"
+  MED_TOKENS_WEIGHT: 5.0
+  MEMORY: False # We don't use replay in  experiment.
+TEST:
+  EVAL_PERIOD: 5000
+MODEL:
+  MASK_FORMER:
+    USE_TEXT_EMBEDDING: False
+    TEXT_PATH: "label_embedding/ade20k_150_laion768_first.npy"
+    CLIP_DIM: 768
