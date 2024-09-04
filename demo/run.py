@@ -212,10 +212,10 @@ ADE20K_150_CATEGORIES = [
 # v1>>v2
 # ids = [106 , 68  ,44,  0 ,  4 , 29 ,141 ,144 , 92 ,145  ,62 ,109  , 5   ,2  ,84 ,113 , 51 ,143 ,103, 104]
 # v2>>v1
-ids = [73,121,140,105,88]
+ids = [101, 103,104]
 anno = '../datasets/ADEChallengeData2016/ade20k_panoptic_val.json'
 gt_vis = '/public/home/zhuyuchen530/projects/ECLIPSE/ade_ps_base_gt_val'
-output = '/inspurfs/group/yangsb/zhuyuchen/2stage_analyse/v2better/mask2former_2s_v2'
+output = './100-5step2_101,103,104'
 with open(anno, 'r') as f:
     data = json.load(f)
 

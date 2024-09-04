@@ -1,1 +1,1 @@
-ADE_train_00000650.jpg
+ADE_val_00001886.jpg

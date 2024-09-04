@@ -4,6 +4,7 @@ CONT:
   BASE_CLS: 100
   INC_CLS: 10
   TASK: 1
+  PSD_OVERLAP: 0.8
 SOLVER:
   STEPS: (8500, 9500)
 OUTPUT_DIR: ./output/ps/100-10/step1

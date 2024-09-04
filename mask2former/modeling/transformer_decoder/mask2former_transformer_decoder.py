@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 # Modified by Bowen Cheng from: https://github.com/facebookresearch/detr/blob/master/models/detr.py
+import copy
 import logging
 import fvcore.nn.weight_init as weight_init
 from typing import Optional
@@ -187,6 +188,27 @@ class FFNLayer(nn.Module):
             return self.forward_pre(tgt)
         return self.forward_post(tgt)
 
+class MoELayer(nn.Module):
+    def __init__(self, d_model, dim_feedforward=2048, dropout=0.0,
+                 activation="relu", normalize_before=False):
+        super().__init__()
+        # Implementation of Feedforward model
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm = nn.LayerNorm(d_model)
+
+        self.activation = _get_activation_fn(activation)
+        self.normalize_before = normalize_before
+
+        self._reset_parameters()
+    
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)    
+
 
 def _get_activation_fn(activation):
     """Return an activation function given a string"""
@@ -284,7 +306,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         assert mask_classification, "Only support mask classification model"
         self.mask_classification = mask_classification
 
-        # self.writer = SummaryWriter(log_dir="runs/nopsd")
+        # if torch.cuda.current_device() == 0:
+        #     self.writer = SummaryWriter(log_dir=f"runs/100-5/step_{len(n_cls_in_tasks)}")
         # positional encoding
         N_steps = hidden_dim // 2
         self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
@@ -296,7 +319,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         self.transformer_cross_attention_layers = nn.ModuleList()
         self.transformer_ffn_layers = nn.ModuleList()
 
-        for _ in range(self.num_layers):
+        for i in range(self.num_layers):
             self.transformer_self_attention_layers.append(
                 SelfAttentionLayer(
                     d_model=hidden_dim,
@@ -315,6 +338,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 )
             )
 
+            # MOE part
+            # if i%2 == 1:
             self.transformer_ffn_layers.append(
                 FFNLayer(
                     d_model=hidden_dim,
@@ -323,6 +348,16 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                     normalize_before=pre_norm,
                 )
             )
+            # else:
+            #     ffn_ = FFNLayer(
+            #             d_model=hidden_dim,
+            #             dim_feedforward=dim_feedforward,
+            #             dropout=0.0,
+            #             normalize_before=pre_norm,
+            #         )
+            #     self.transformer_ffn_layers.append(
+            #         nn.ModuleList([copy.deepcopy(ffn_) for _ in range(len(n_cls_in_tasks))])
+            #     )
 
         self.decoder_norm = nn.LayerNorm(hidden_dim)
 
@@ -373,7 +408,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 #     for i in range(1, len(n_cls_in_tasks)):
                 #         self.class_embeds[i].weight.data.copy_(self.class_embeds[0].weight.data[selectedBysimilarity])
 
-        self.n_cls_in_tasks = n_cls_in_tasks
+        self.n_cls_in_tasks = torch.as_tensor(n_cls_in_tasks)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
         # maskdino like query_pos
@@ -541,7 +576,19 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
         output = tgt_undetach.permute(1, 0, 2).detach()
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 2
-        
+
+        #**************************
+        # scores, labels = enc_output_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
+        # # print(f"sum: {self.n_cls_in_tasks.sum()}")
+        # moe_idx = torch.ones_like(labels) * -1
+        # cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
+        # for i in range(len(cls_cumsum) - 1):
+        #     moe_idx[(labels >= cls_cumsum[i]) & (labels < cls_cumsum[i + 1])] = i
+        # # check
+        # # print(moe_idx.unique(), cls_cumsum)
+        # assert moe_idx.min() > -1
+        #**************************
+
         interm_outputs=dict()
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
@@ -594,6 +641,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # torch.save(save,path_)
         # ***************visualize*********************
 
+        # print('************************************')
         for i in range(self.num_layers):
             if True:
                 # flaten_mask = enc_outputs_mask.detach().flatten(0, 1)
@@ -613,7 +661,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 # refpoint_embed = refpoint_embed.transpose(0, 1) # query,bs 4
                 
 
-                # only cx,cy
                 query_sine_embed = self._gen_sineembed_for_position(refpoint_embed) # nq, bs, 256*2
 
                 raw_query_pos = self.ref_point_head(query_sine_embed)  # nq, bs, 256
@@ -643,6 +690,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             )
 
             outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
+            outNum, outMask =  self.check_logits(outputs_class)
+            print(f"layer {i} outNum: {outNum}")
 
             if self.bbox_embed is not None:
                 reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
@@ -656,7 +705,34 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
+            #**************************找到query属于哪个step****************************************************
+            # scores, labels = outputs_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
+            # # print(f"sum: {self.n_cls_in_tasks.sum()}")
+            # moe_idx_last = torch.ones_like(labels) * -1
+            # cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
+            # for j in range(len(cls_cumsum) - 1):
+            #     moe_idx_last[(labels >= cls_cumsum[j]) & (labels < cls_cumsum[j + 1])] = j
+            # # check
+            # assert moe_idx_last.min() > -1
+            # #**************************
+            # query_num = []
+            # for task in range(len(self.n_cls_in_tasks)):
+            #     query_count = torch.sum(moe_idx_last == task)
+            #     query_num.append(query_count.item())  # 将tensor转换为Python的整数
+
+            # 使用 TensorBoard 记录所有任务的 query_num 在同一张图中
+            # query_num_dict = {f'task_{task}': count for task, count in enumerate(query_num)}
+
+            # if torch.cuda.current_device() == 0:
+            #     self.writer.add_scalars('query_num', query_num_dict, self.count)
+            #     self.count += 1
+            # # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
+            # changenum = torch.sum(moe_idx_last!= moe_idx)
+            # print(f"change num {i} -> {i+1}: {changenum}")
+            # moe_idx = moe_idx_last.clone()
+
         # assert len(predictions_class) == self.num_layers + 1
+        # print('************************************')
         assert len(predictions_class) == self.num_layers
 
 
@@ -669,15 +745,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             ),
             'interm_outputs': interm_outputs
         }
-        # out = {
-        #     'pred_logits': interm_outputs['pred_logits'],
-        #     'pred_masks': interm_outputs['pred_masks'],
-        #     'pred_boxes': interm_outputs['pred_boxes'],
-        #     'aux_outputs': self._set_aux_loss(
-        #         predictions_class if self.mask_classification else None, predictions_mask, predictions_box
-        #     ),
-        #     'interm_outputs': interm_outputs
-        # }
         return out
 
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
@@ -750,4 +817,10 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 ]
         else:
             return [{"pred_masks": b} for b in outputs_seg_masks[:-1]]
+    
+    def check_logits(self, logits):
+        score, label = logits.max(-1)
+        outrange_mask = (label >= self.n_cls_in_tasks.sum()) | (label < 0)
+        outNum = torch.sum(outrange_mask)
+        return outNum, outrange_mask
 

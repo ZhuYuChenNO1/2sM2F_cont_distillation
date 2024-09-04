@@ -48,6 +48,8 @@ class MaskFormer(nn.Module):
         instance_on: bool,
         test_topk_per_image: int,
         current_catagory_ids: list = None,
+        task: int = 1,
+        psd_overlap_threshold: float = 0.8,
     ):
         """
         Args:
@@ -105,7 +107,10 @@ class MaskFormer(nn.Module):
             'gt': 0,
             'pesudo': 0
         }
-        # self.writer = SummaryWriter(log_dir="runs/experiment2")
+        self.task = task
+        # print(f"current_catagory_ids: {task}")
+        self.psd_overlap_threshold = psd_overlap_threshold
+        # self.writer = SummaryWriter(log_dir=f"output/ps/100-10_psd0.8/step{task}")
         self.count = 0
     @classmethod
     def from_config(cls, cfg):
@@ -184,6 +189,8 @@ class MaskFormer(nn.Module):
             "panoptic_on": cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON,
             "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
             "current_catagory_ids": current_catagory_ids,
+            "task": cfg.CONT.TASK,
+            "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP,
         }
 
     @property
@@ -238,15 +245,17 @@ class MaskFormer(nn.Module):
                 # bipartite matching-based loss
                 
                 # In baseline we don't use query 回溯 loss
-                # for t, p in zip(psd_targets, targets):
-                #     nt = len(t['labels'])
-                #     np = len(p['labels'])
-                #     self.save['gt'] += nt
-                #     self.save['pesudo'] += np
-                #     ratio = self.save['gt']/ self.save['pesudo']
-                #     self.writer.add_scalar('gt/pesudo', ratio, self.count)
+                # device = torch.cuda.current_device()
+                # if device == 0: 
+                #     for t, p in zip(psd_targets, targets):
+                #         nt = len(t['labels'])
+                #         np = len(p['labels'])
+                #         self.save['gt'] += nt
+                #         self.save['pesudo'] += np
+                #         ratio = self.save['gt']/ self.save['pesudo']
+                #         self.writer.add_scalar('gt/pesudo', ratio, self.count)
+                #     self.count += 1
 
-                self.count += 1
                 losses = self.criterion(outputs, targets, psd_targets, old_targets)
 
             else:
@@ -396,7 +405,8 @@ class MaskFormer(nn.Module):
                 non_ol_masks = torch.logical_and(non_ol_masks, torch.logical_not(gt_region))
 
             new_area = non_ol_masks.sum(dim=(1, 2))
-            keep = (new_area > 0) & (new_area > old_area * self.overlap_threshold)
+            # keep = (new_area > 0) & (new_area > old_area * self.overlap_threshold)
+            keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold)
 
             psd_target["labels"] = old_labels[keep]
             # psd_target["masks"] = non_ol_masks[keep]

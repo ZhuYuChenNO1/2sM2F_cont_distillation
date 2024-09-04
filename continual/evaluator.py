@@ -21,7 +21,9 @@ from detectron2.utils.file_io import PathManager
 from detectron2.evaluation import DatasetEvaluator, SemSegEvaluator, COCOPanopticEvaluator
 from detectron2.evaluation.coco_evaluation import COCOEvaluator, _evaluate_predictions_on_coco, create_small_table
 from detectron2.evaluation.panoptic_evaluation import _print_panoptic_results
+import logging
 
+logger = logging.getLogger('detectron2')
 
 class SemSegEvaluator(SemSegEvaluator):
     """
@@ -204,6 +206,7 @@ class COCOPanopticEvaluator(COCOPanopticEvaluator):
         self.category_ids_past = list(range(sum(n_cls_in_tasks[:task - 1])))
         self.category_ids_current = list(range(sum(n_cls_in_tasks[:task - 1]), sum(n_cls_in_tasks[:task])))
         self.category_ids_all = list(range(sum(n_cls_in_tasks[:task])))
+        self.n_cls_in_tasks_cumsum = [0] + torch.as_tensor(n_cls_in_tasks).cumsum(0).tolist()
 
     def evaluate(self):
         comm.synchronize()
@@ -273,6 +276,21 @@ class COCOPanopticEvaluator(COCOPanopticEvaluator):
         for i, p in enumerate(pq_res['per_class'].values()):
             print(f'category {i} PQ: {p["pq"] * 100:.3f} SQ: {p["sq"] * 100:.3f} RQ: {p["rq"] * 100:.3f}')
         # compute pq, sq, rq
+        pq_everystep = np.array([])
+        for i in range(len(self.n_cls_in_tasks_cumsum)-1):
+            step_mean = np.mean([pq_res["per_class"][k]["pq"] for k in range(self.n_cls_in_tasks_cumsum[i], self.n_cls_in_tasks_cumsum[i+1])])
+            pq_everystep = np.append(pq_everystep, step_mean)
+        sq_everystep = np.array([])
+        for i in range(len(self.n_cls_in_tasks_cumsum)-1):
+            step_mean = np.mean([pq_res["per_class"][k]["sq"] for k in range(self.n_cls_in_tasks_cumsum[i], self.n_cls_in_tasks_cumsum[i+1])])
+            sq_everystep = np.append(sq_everystep, step_mean)
+        rq_everystep = np.array([])
+        for i in range(len(self.n_cls_in_tasks_cumsum)-1):
+            step_mean = np.mean([pq_res["per_class"][k]["rq"] for k in range(self.n_cls_in_tasks_cumsum[i], self.n_cls_in_tasks_cumsum[i+1])])
+            rq_everystep = np.append(rq_everystep, step_mean)
+        
+        stage2PQ = [pq_res["per_class"][k]["pq"] for k in range(100, 105)]
+
         pq_old = np.mean([pq_res["per_class"][k]["pq"] for k in old_ids])
         pq_new = np.mean([pq_res["per_class"][k]["pq"] for k in new_ids])
         pq_past = np.mean([pq_res["per_class"][k]["pq"] for k in past_ids])
@@ -392,6 +410,10 @@ class COCOPanopticEvaluator(COCOPanopticEvaluator):
 
         results = OrderedDict({"panoptic_seg": res})
         _print_panoptic_results(pq_res)
+        logger.info([f"step {i+1}: {pq * 100:.3f} " for i, pq in enumerate(pq_everystep)])
+        logger.info([f"step {i+1}: {sq * 100:.3f} " for i, sq in enumerate(sq_everystep)])
+        logger.info([f"step {i+1}: {rq * 100:.3f} " for i, rq in enumerate(rq_everystep)])
+        logger.info([f"class{99+i}_PQ: {pq * 100:.3f} " for i, pq in enumerate(stage2PQ)])
 
         return results
 

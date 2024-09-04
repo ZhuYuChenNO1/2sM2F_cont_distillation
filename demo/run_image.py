@@ -212,12 +212,12 @@ ADE20K_150_CATEGORIES = [
 # v1>>v2
 # ids = [106 , 68  ,44,  0 ,  4 , 29 ,141 ,144 , 92 ,145  ,62 ,109  , 5   ,2  ,84 ,113 , 51 ,143 ,103, 104]
 # v2>>v1
-ids = [73,121,140,105,88]
+# ids = [73,121,140,105,88]
 anno = '../datasets/ADEChallengeData2016/ade20k_panoptic_val.json'
 gt_vis = '/public/home/zhuyuchen530/projects/ECLIPSE/ade_ps_base_gt_val'
 output = '/inspurfs/group/yangsb/zhuyuchen/2stage_analyse/v2better/mask2former_2s_v2'
-with open(anno, 'r') as f:
-    data = json.load(f)
+# with open(anno, 'r') as f:
+#     data = json.load(f)
 
 # anno_list = data['annotations']
 # image_list = {}
@@ -233,7 +233,8 @@ with open(anno, 'r') as f:
 # image_list = ['ADE_train_00009424.png',  "ADE_train_00009428.png",  "ADE_train_00009508.png",  \
 #     "ADE_train_00009591.png", "ADE_train_00009611.png", "ADE_train_00000308.png",  "ADE_train_00000553.png", \
 #         "ADE_train_00000576.png", "ADE_train_00000650.png",  "ADE_train_00001503.png" ]
-image_list = ["ADE_train_00000650.png"]
+image_list = ['ADE_train_00009508.jpg','ADE_train_00008751.jpg','ADE_train_00004785.jpg','ADE_train_00009123.jpg','ADE_train_00009892.jpg',\
+ 'ADE_train_00008436.jpg','ADE_train_00009135.jpg','ADE_train_00003171.jpg','ADE_train_00011140.jpg',]
 print(image_list)
 for j, img in enumerate(image_list):
     img = img.split('.')[0] + '.jpg'

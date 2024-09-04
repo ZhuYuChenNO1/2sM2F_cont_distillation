@@ -541,8 +541,8 @@ class Visualizer:
         labels = _create_text_labels(
             category_ids, scores, self.metadata.stuff_classes, [x.get("iscrowd", 0) for x in sinfo]
         )
-        print(f"len of stuff_classes: {len(self.metadata.stuff_classes)}")
-        print(f"len of stuff_classes: {}")
+        # print(f"len of stuff_classes: {len(self.metadata.stuff_classes)}")
+        # print(f"len of stuff_classes: {}")
 
         try:
             colors = [

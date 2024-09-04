@@ -12,3 +12,4 @@ def add_continual_config(cfg):
     cfg.CONT.OLD_WEIGHTS = None
     cfg.CONT.MED_TOKENS_WEIGHT = 1.0
     cfg.CONT.MEMORY = False
+    cfg.CONT.PSD_OVERLAP = 0.8
