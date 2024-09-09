@@ -136,7 +136,7 @@ class MaskFormer(nn.Module):
 
         weight_dict = {"interm_loss_ce": class_weight, "loss_ce": class_weight, "interm_loss_mask": mask_weight, \
             "loss_mask": mask_weight, "interm_loss_dice": dice_weight, "loss_dice": dice_weight, "interm_loss_bbox": mask_weight, \
-                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight}
+                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight, "kl_loss" : 2.0}
 
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
@@ -197,7 +197,7 @@ class MaskFormer(nn.Module):
     def device(self):
         return self.pixel_mean.device
 
-    def forward(self, batched_inputs, old_pred=None, psd_label=False, old_med_tokens=None):
+    def forward(self, batched_inputs, old_pred=None, psd_label=False, topk_feats_info=None, med_feats_info=None):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper`.
@@ -208,6 +208,8 @@ class MaskFormer(nn.Module):
                    * Other information that's included in the original dicts, such as:
                      "height", "width" (int): the output resolution of the model (may be different
                      from input resolution), used in inference.
+                'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
+                'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
         Returns:
             list[dict]:
                 each dict has the results for one image. The dict contains the following keys:
@@ -228,10 +230,10 @@ class MaskFormer(nn.Module):
         images = ImageList.from_tensors(images, self.size_divisibility)
 
         features = self.backbone(images.tensor)
-        outputs = self.sem_seg_head(features)
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
+            outputs = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
             # mask classification target
             if "instances" in batched_inputs[0]:
                 gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
@@ -256,7 +258,7 @@ class MaskFormer(nn.Module):
                 #         self.writer.add_scalar('gt/pesudo', ratio, self.count)
                 #     self.count += 1
 
-                losses = self.criterion(outputs, targets, psd_targets, old_targets)
+                losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, med_feats_info)
 
             else:
                 losses = self.criterion(outputs, targets)
@@ -269,9 +271,13 @@ class MaskFormer(nn.Module):
                     losses.pop(k)
             return losses
         else:
+            outputs = self.sem_seg_head(features)
+            
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
             bbox_pred_results = outputs["pred_boxes"]
+            topk_feats_info = outputs["topk_feats_info"]
+            med_feats_info = outputs["med_feats_info"]
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -302,6 +308,7 @@ class MaskFormer(nn.Module):
                     output_psd_label['masks'] = mask_pred_result[keep][sort].sigmoid()
                     output_psd_label['scores'] = scores[keep][sort]
                     output_psd_label['boxes'] = bbox_pred_result[keep][sort]
+                    # output_psd_label['med_feats'] = {}
 
 
                     processed_results.append(output_psd_label)
@@ -333,7 +340,10 @@ class MaskFormer(nn.Module):
                         instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                         processed_results[-1]["instances"] = instance_r
 
-            return processed_results
+            if psd_label:
+                return processed_results, topk_feats_info, med_feats_info
+            else:
+                return processed_results
 
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]

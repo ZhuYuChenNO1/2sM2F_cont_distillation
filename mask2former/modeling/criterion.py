@@ -18,8 +18,9 @@ from detectron2.projects.point_rend.point_features import (
 
 from ..utils.misc import is_dist_avail_and_initialized, nested_tensor_from_tensor_list
 from mask2former.utils import box_ops
+import time
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2, mask=None):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     Args:
@@ -36,8 +37,10 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         Loss tensor
     """
     prob = inputs.sigmoid()
-    # weight = torch.ones(inputs.shape[-1]).to(inputs.device)
-    # weight[100:] = 3
+    # mask = torch.ones_like(inputs)
+    # mask[..., :100] = 0.0
+    # mask += targets
+    # old_mask = (mask==0.0)
 
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
     p_t = prob * targets + (1 - prob) * (1 - targets)
@@ -46,7 +49,9 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
     if alpha >= 0:
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
-
+    # loss[old_mask] = 0.0
+    if mask is not None:
+        loss = loss * mask
 
     return loss.mean(1).sum() / num_boxes
 
@@ -93,7 +98,6 @@ def sigmoid_ce_loss(
         Loss tensor
     """
     loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-
     return loss.mean(1).sum() / num_masks
 
 
@@ -177,7 +181,36 @@ class SetCriterion(nn.Module):
         """
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
+        assert 'pred_masks' in outputs
+        src_masks = outputs["pred_masks"]
+        # 拿到每个batch的gt mask
+        masks = [t["masks"] for t in targets]
 
+        src_masks = F.interpolate(
+            src_masks,
+            size=(masks[0].shape[-2], masks[0].shape[-1]),
+            mode="bilinear",
+            align_corners=False,
+        )
+        # TODO use valid to mask invalid areas due to padding in loss
+        mask_thresh_hold = 0.0
+        target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
+        target_masks = target_masks.to(src_logits)
+        target_masks = target_masks.sum(1) != 0
+        b, q, w, h = src_masks.shape
+        omit_query = torch.ones((b, q), dtype=torch.bool, device=src_logits.device)
+        for i, (src_mask, src_target) in enumerate(zip(src_masks, target_masks)):
+            for j, mask in enumerate(src_mask):
+                assert mask.shape == src_target.shape, f"{mask.shape}{src_target.shape}"
+
+                # print(f"{((mask >= mask_thresh_hold) & src_target).sum().item()} VS {(mask >= mask_thresh_hold).sum().item()}")
+                # time.sleep(0.1)
+                
+                if ((mask >= mask_thresh_hold) & src_target).sum().item() <= (mask >= mask_thresh_hold).sum().item() * 0.0:
+                    omit_query[i][j]=0
+        # print(f"omit_query: {(omit_query==0).sum()}")
+        query_mask = omit_query.unsqueeze(-1).repeat(1, 1, src_logits.shape[-1])
+        
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
@@ -192,7 +225,7 @@ class SetCriterion(nn.Module):
             raise ValueError(f"out of boundry {target_classes_onehot.shape} but got {target_classes}")
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2, mask=query_mask) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
         return losses
@@ -319,14 +352,14 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_masks)
 
-    def forward(self, outputs, targets, psd_targets=None, old_targets=None, med_tokens=None, old_med_tokens=None):
+    def forward(self, outputs, targets, psd_targets=None, old_targets=None, topk_feats_info=None, med_feats_info=None):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
+        outputs_without_aux = {k: v for k, v in outputs.items() if 'pred' in k}
 
         if self.current_catagory_ids is not None:
             # print("current_catagory_ids", self.current_catagory_ids)
@@ -390,6 +423,14 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(loss, outputs["interm_outputs"], complete_psd_targets, indices, num_masks)
                 l_dict = {'interm_' + k: v for k, v in l_dict.items()}
                 losses.update(l_dict)
+        
+        if topk_feats_info is not None:
+            distill_logits = outputs['distill_logits'] 
+            old_logits = topk_feats_info['class_logits']
+            distill_probs = F.log_softmax(distill_logits, dim=-1)
+            old_probs = F.softmax(old_logits, dim=-1)
+            kl_loss = F.kl_div(distill_probs, old_probs, reduction='batchmean')
+            losses.update({'kl_loss': kl_loss})
 
         return losses
 

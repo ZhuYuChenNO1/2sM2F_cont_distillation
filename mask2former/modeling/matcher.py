@@ -93,7 +93,7 @@ class HungarianMatcher(nn.Module):
         self.cost_dice = cost_dice
         self.cost_box = cost_mask
         self.cost_giou = 2.0
-        self.writer = SummaryWriter(log_dir="output/ps/100-10_testclip2")
+        # self.writer = SummaryWriter(log_dir="output/ps/100-10_testclip2")
 
         assert cost_class != 0 or cost_mask != 0 or cost_dice != 0, "all costs cant be 0"
 

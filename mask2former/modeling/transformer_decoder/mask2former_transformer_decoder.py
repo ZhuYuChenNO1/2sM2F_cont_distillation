@@ -465,7 +465,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         return ret
 
-    def forward(self, x, mask_features, mask = None):
+    def forward(self, x, mask_features, mask = None, distill_position = None):
         # x is a list of multi-scale feature
         assert len(x) == self.num_feature_levels
         src = []
@@ -510,6 +510,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         else:
             # enc_outputs_class_unselected =torch.cat([class_embed(self.decoder_norm(output_memory)) for class_embed in self.class_embeds], dim=-1) # (bs, \sum{hw}, num_classes)
             enc_outputs_class_unselected =self.class_embed(self.decoder_norm(output_memory)) # (bs, \sum{hw}, num_classes)
+            if distill_position is not None:
+                distill_logits = torch.gather(enc_outputs_class_unselected, 1, distill_position.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
             # enc_outputs_class_unselected = torch.cat((-torch.ones((bs, n_points,100), device=enc_outputs_class_unselected.device)*100, enc_outputs_class_unselected), dim=-1)
         # enc_outputs_class_unselected = self.class_embed(output_memory)  # (bs, \sum{hw}, num_classes)
         # enc_outputs_class_unselected[..., -10:] *= 0.6
@@ -690,9 +692,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             )
 
             outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
-            outNum, outMask =  self.check_logits(outputs_class)
-            print(f"layer {i} outNum: {outNum}")
-
             if self.bbox_embed is not None:
                 reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
                 delta_unsig = self.bbox_embed[i](output)
@@ -736,15 +735,32 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         assert len(predictions_class) == self.num_layers
 
 
-        out = {
-            'pred_logits': predictions_class[-1],
-            'pred_masks': predictions_mask[-1],
-            'pred_boxes': predictions_box[-1],
-            'aux_outputs': self._set_aux_loss(
-                predictions_class if self.mask_classification else None, predictions_mask, predictions_box
-            ),
-            'interm_outputs': interm_outputs
-        }
+        if not self.training:
+            out = {
+                'pred_logits': predictions_class[-1],
+                'pred_masks': predictions_mask[-1],
+                'pred_boxes': predictions_box[-1],
+                'aux_outputs': self._set_aux_loss(
+                    predictions_class if self.mask_classification else None, predictions_mask, predictions_box
+                ),
+                'interm_outputs': interm_outputs,
+                'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
+                'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
+            }
+        else:
+            out = {
+                'pred_logits': predictions_class[-1],
+                'pred_masks': predictions_mask[-1],
+                'pred_boxes': predictions_box[-1],
+                'aux_outputs': self._set_aux_loss(
+                    predictions_class if self.mask_classification else None, predictions_mask, predictions_box
+                ),
+                'interm_outputs': interm_outputs,
+                'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
+                'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
+                'distill_logits': distill_logits,
+            }
+            
         return out
 
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
