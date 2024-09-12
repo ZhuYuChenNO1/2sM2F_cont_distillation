@@ -395,6 +395,12 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             else:
                 # Use static class head
                 self.class_embed = nn.Linear(hidden_dim, 150)
+                last_step_cls = sum(n_cls_in_tasks[:-1]) if len(n_cls_in_tasks) > 1 else 0
+                with torch.no_grad():
+                    self.class_embed.weight[:last_step_cls].requires_grad = False
+                    self.class_embed.bias[:last_step_cls].requires_grad = False
+                print(f"freeze the first {last_step_cls} classes in the class head")
+
                 
                 
                 # Use incremental class head
