@@ -20,6 +20,8 @@ import os
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
+import random
+
     
 def sigmoid_to_logit(x):
     x = x.clamp(0.001, 0.999)
@@ -395,11 +397,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             else:
                 # Use static class head
                 self.class_embed = nn.Linear(hidden_dim, 150)
-                last_step_cls = sum(n_cls_in_tasks[:-1]) if len(n_cls_in_tasks) > 1 else 0
-                with torch.no_grad():
-                    self.class_embed.weight[:last_step_cls].requires_grad = False
-                    self.class_embed.bias[:last_step_cls].requires_grad = False
-                print(f"freeze the first {last_step_cls} classes in the class head")
+                # last_step_cls = sum(n_cls_in_tasks[:-1]) if len(n_cls_in_tasks) > 1 else 0
+                # with torch.no_grad():
+                #     self.class_embed.weight[:last_step_cls].requires_grad = False
+                #     self.class_embed.bias[:last_step_cls].requires_grad = False
+                # print(f"freeze the first {last_step_cls} classes in the class head")
 
                 
                 
@@ -428,6 +430,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         nn.init.constant_(_bbox_embed.layers[-1].bias.data, 0)
         box_embed_layerlist = [_bbox_embed for _ in range(self.num_layers)]  # share box prediction each layer
         self.bbox_embed = nn.ModuleList(box_embed_layerlist)
+
+        import pickle
+        with open('/root/projets/2sM2F_cont_distillation/step1Query.pkl', 'rb') as f:
+            self.fake_query = pickle.load(f)
+        # self.fake_query = nn.Parameter(self.query_feat)
         # self.bbox_embed = None
     
         self.count = 0
@@ -478,6 +485,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         pos = []
         size_list = []
 
+        
+
         # disable mask, it does not affect performance
         del mask
 
@@ -491,6 +500,15 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             src[-1] = src[-1].permute(2, 0, 1)
 
         _, bs, _ = src[0].shape
+
+        # get fake query with bs
+        fake_target = random.sample(self.fake_query.keys(), bs)
+        fake_query = []
+        for i in fake_target:
+            info = random.sample(self.fake_query[i], 1)[0]
+            fake_query.append([info['med_feats']])
+        fake_query = torch.as_tensor(fake_query, device=src[0].device)
+        # bs * 1 * dim
 
         # QxNxC
         # query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
@@ -578,12 +596,18 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         tgt_undetach = torch.gather(output_memory, 1,
                                   topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
+        # concat with fake query
+        if self.training:
+            tgt_undetach = torch.cat([tgt_undetach, fake_query], dim=1)
+
         refpoint_embed_unsig_undetach = torch.gather(enc_outputs_coord_unselected, 1,
                                                 topk_proposals.unsqueeze(-1).repeat(1, 1, 4))  # unsigmoid
         enc_output_class, enc_outputs_mask, attn_mask = self.forward_prediction_heads(
             tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
         output = tgt_undetach.permute(1, 0, 2).detach()
-        refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 2
+        refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
+        if self.training:
+            refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, 1))
 
         #**************************
         # scores, labels = enc_output_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
@@ -600,7 +624,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         interm_outputs=dict()
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
-        interm_outputs['pred_boxes'] = refpoint_embed_unsig_undetach.sigmoid()
+        interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,1,0,0))
         # print('modify here')
         predictions_class = []
         predictions_mask = []
@@ -753,6 +777,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
                 'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
             }
+            return out
         else:
             out = {
                 'pred_logits': predictions_class[-1],
@@ -767,7 +792,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 'distill_logits': distill_logits,
             }
             
-        return out
+            return out, fake_target
 
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
         decoder_output = self.decoder_norm(output)

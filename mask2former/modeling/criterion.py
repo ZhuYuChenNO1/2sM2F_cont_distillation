@@ -19,6 +19,7 @@ from detectron2.projects.point_rend.point_features import (
 from ..utils.misc import is_dist_avail_and_initialized, nested_tensor_from_tensor_list
 from mask2former.utils import box_ops
 import time
+import copy
 
 def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2, mask=None):
     """
@@ -352,7 +353,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_masks)
 
-    def forward(self, outputs, targets, psd_targets=None, old_targets=None, topk_feats_info=None, med_feats_info=None):
+    def forward(self, outputs, targets, psd_targets=None, old_targets=None, topk_feats_info=None, med_feats_info=None, fake_query_labels=None):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -392,7 +393,8 @@ class SetCriterion(nn.Module):
 
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, complete_psd_targets)
+        outputs_without_aux_no_fakeQuery = self._remove_fake_query(outputs_without_aux)
+        indices = self.matcher(outputs_without_aux_no_fakeQuery, complete_psd_targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_masks = sum(len(t["labels"]) for t in complete_psd_targets)
@@ -406,21 +408,35 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, complete_psd_targets, indices, num_masks))
+            if loss == 'labels':
+                new_indices, new_targets = self._modify_indices_targets_for_fake_query(indices, complete_psd_targets, fake_query_labels)
+                losses.update(self.get_loss(loss, outputs, new_targets, new_indices, num_masks))
+            else:
+                losses.update(self.get_loss(loss, outputs, complete_psd_targets, indices, num_masks))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
-                indices = self.matcher(aux_outputs, complete_psd_targets)
+                aux_outputs_no_fakeQuery = self._remove_fake_query(aux_outputs)
+                indices = self.matcher(aux_outputs_no_fakeQuery, complete_psd_targets)
                 for loss in self.losses:
-                    l_dict = self.get_loss(loss, aux_outputs, complete_psd_targets, indices, num_masks)
+                    if loss == 'labels':
+                        new_indices, new_targets = self._modify_indices_targets_for_fake_query(indices, complete_psd_targets, fake_query_labels)
+                        l_dict = self.get_loss(loss, aux_outputs, new_targets, new_indices, num_masks)
+                    else:
+                        l_dict = self.get_loss(loss, aux_outputs, complete_psd_targets, indices, num_masks)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
         
         if "interm_outputs" in outputs:
-            indices = self.matcher(outputs["interm_outputs"], complete_psd_targets)
+            interm_outputs_no_fakeQuery = self._remove_fake_query(outputs["interm_outputs"])
+            indices = self.matcher(interm_outputs_no_fakeQuery, complete_psd_targets)
             for loss in self.losses:
-                l_dict = self.get_loss(loss, outputs["interm_outputs"], complete_psd_targets, indices, num_masks)
+                if loss == 'labels':
+                    new_indices, new_targets = self._modify_indices_targets_for_fake_query(indices, complete_psd_targets, fake_query_labels)
+                    l_dict = self.get_loss(loss, outputs["interm_outputs"], new_targets, new_indices, num_masks)
+                else:
+                    l_dict = self.get_loss(loss, outputs["interm_outputs"], complete_psd_targets, indices, num_masks)
                 l_dict = {'interm_' + k: v for k, v in l_dict.items()}
                 losses.update(l_dict)
         
@@ -434,6 +450,28 @@ class SetCriterion(nn.Module):
 
         return losses
 
+    def _remove_fake_query(self, outputs):
+        ret = {}
+        for k, v in outputs.items():
+            ret[k] = v[:, :-1]
+        return ret
+    
+    def _modify_indices_targets_for_fake_query(self, indices, targets, fake_query_labels):
+        assert len(fake_query_labels) == len(targets) == len(indices)
+
+        new_indices = []
+        new_targets = copy.deepcopy(targets)
+        for indice in indices:
+            new_indice = list(copy.deepcopy(indice))
+            new_indice[0] = torch.cat((new_indice[0], torch.tensor([100], device=indice[0].device)))
+            new_indice[1] = torch.cat((new_indice[1], torch.tensor([(max(indice[1])+1)], device=indice[0].device)))
+            new_indices.append(new_indice)
+        for i, (t, fql) in enumerate(zip(new_targets, fake_query_labels)):
+            t['labels'] = torch.cat((t['labels'], torch.tensor([fql], device=t['labels'].device)))
+        
+        return new_indices, new_targets
+        
+            
     def __repr__(self):
         head = "Criterion " + self.__class__.__name__
         body = [
