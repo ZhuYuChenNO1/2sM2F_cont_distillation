@@ -397,7 +397,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             else:
                 # Use static class head
                 self.class_embed = nn.Linear(hidden_dim, 150)
-                last_step_cls = sum(n_cls_in_tasks[:-1]) if len(n_cls_in_tasks) > 1 else 0
+                # last_step_cls = sum(n_cls_in_tasks[:-1]) if len(n_cls_in_tasks) > 1 else 0
                 # with torch.no_grad():
                 #     self.class_embed.weight[:last_step_cls].requires_grad = False
                 #     self.class_embed.bias[:last_step_cls].requires_grad = False
@@ -433,7 +433,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         import pickle
         with open('/root/projets/2sM2F_cont_distillation/step1Query.pkl', 'rb') as f:
-            self.fake_query = pickle.load(f)
+            step1 = pickle.load(f)
+        with open('/root/projets/2sM2F_cont_distillation/step2Query.pkl', 'rb') as f:
+            step2 = pickle.load(f)
+        step1.update(step2)
+        self.fake_query = step1
         # self.fake_query = nn.Parameter(self.query_feat)
         # self.bbox_embed = None
     
@@ -710,12 +714,22 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 tgt_key_padding_mask=None,
                 query_pos=query_embed
             )
-            output = self.transformer_cross_attention_layers[i](
-                output, src[level_index],
-                memory_mask=attn_mask,
-                memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                pos=pos[level_index], query_pos=query_embed
-            )
+            if self.training:
+                fake_query_embed = output[-1].unsqueeze(0) # 1 * bs * dim
+                output = self.transformer_cross_attention_layers[i](
+                    output[:-1], src[level_index],
+                    memory_mask=attn_mask[:,:-1,:],
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed[:-1]
+                )
+                output = torch.cat([output, fake_query_embed], dim=0)
+            else:
+                output = self.transformer_cross_attention_layers[i](
+                    output, src[level_index],
+                    memory_mask=attn_mask,
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed
+                )
             # FFN
             output = self.transformer_ffn_layers[i](
                 output
