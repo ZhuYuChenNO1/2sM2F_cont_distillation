@@ -427,6 +427,16 @@ class SetCriterion(nn.Module):
         if topk_feats_info is not None:
             distill_logits = outputs['distill_logits'] 
             old_logits = topk_feats_info['class_logits']
+            # old_class_num = min(self.current_catagory_ids)
+            # mask = torch.max(old_logits[...,:old_class_num], dim=-1)[0] > torch.sum(old_logits[...,old_class_num:], dim=-1)
+
+            # distill_logits = distill_logits[mask]
+            # old_logits = old_logits[mask]
+            # print(old_logits.shape, distill_logits.shape, old_class_num)
+            # select = old_logits.max(-1)[0] > 0.35
+            # distill_logits = distill_logits[select]
+            # old_logits = old_logits[select]           
+
             distill_probs = F.log_softmax(distill_logits, dim=-1)
             old_probs = F.softmax(old_logits, dim=-1)
             kl_loss = F.kl_div(distill_probs, old_probs, reduction='batchmean')
