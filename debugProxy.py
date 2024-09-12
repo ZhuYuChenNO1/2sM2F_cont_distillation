@@ -4,7 +4,9 @@ import runpy
 
 # os.chdir('WORKDIR')
 # args = 'python test.py 4 5'
-args = 'python visualize_data.py --source annotation --config-file configs/ade20k/panoptic-segmentation/maskformer2_R50_bs16_160k.yaml --output-dir ./try_debug'
+args = 'python train_continual.py --dist-url auto --num-gpus 1 --config-file configs/ade20k/panoptic-segmentation/100-5.yaml \
+CONT.TASK 2 SOLVER.BASE_LR 0.00005 SOLVER.MAX_ITER 5000 OUTPUT_DIR ./output/ps/100-5_distill_freezelabel_tt/step2 \
+CONT.WEIGHTS model_final.pth'
 # args = 'python tools/train_net.py --config-file projects/deformable_detr/configs/deformable_detr_r50_two_stage_50ep.py --num-gpus 2' 
 # args = 'python tools/train_net.py --config-file projects/deformable_detr/configs/deformable_detr_r50_two_stage_90k_cocolvis.py --num-gpus 1 train.init_checkpoint=model_final.pth'
 

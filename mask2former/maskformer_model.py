@@ -233,7 +233,7 @@ class MaskFormer(nn.Module):
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
-            outputs = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
+            outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
             # mask classification target
             if "instances" in batched_inputs[0]:
                 gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
@@ -258,7 +258,7 @@ class MaskFormer(nn.Module):
                 #         self.writer.add_scalar('gt/pesudo', ratio, self.count)
                 #     self.count += 1
 
-                losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, med_feats_info)
+                losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, med_feats_info, _fake_query_labels)
 
             else:
                 losses = self.criterion(outputs, targets)
