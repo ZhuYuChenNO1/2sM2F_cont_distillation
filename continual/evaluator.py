@@ -273,8 +273,14 @@ class COCOPanopticEvaluator(COCOPanopticEvaluator):
         all_st_ids = set(self.category_ids_all) & set(stuff_ids) & set(valid_ids)
 
         from rich import print
+        select_ids = [35, 37, 44, 46, 49, 50, 51, 56, 58, 60, 64, 65, 68, 70, 71, 73, 77,78, 79, 81, 91, 92, 96, 97, 99]
+        not_selected = [i for i in range(100) if i not in select_ids]
         for i, p in enumerate(pq_res['per_class'].values()):
-            print(f'category {i} PQ: {p["pq"] * 100:.3f} SQ: {p["sq"] * 100:.3f} RQ: {p["rq"] * 100:.3f}')
+            logger.info(f'category {i} PQ: {p["pq"] * 100:.3f} SQ: {p["sq"] * 100:.3f} RQ: {p["rq"] * 100:.3f}')
+        select_pq = np.sum([pq_res['per_class'][i]['pq'] * 100 for i in select_ids])/25
+        logger.info(f'PQ of select categories: {select_pq}')
+        not_select_pq = np.sum([pq_res['per_class'][i]['pq'] * 100 for i in not_selected])/75
+        logger.info(f'PQ of not select base categories: {not_select_pq}')
         # compute pq, sq, rq
         pq_everystep = np.array([])
         for i in range(len(self.n_cls_in_tasks_cumsum)-1):
