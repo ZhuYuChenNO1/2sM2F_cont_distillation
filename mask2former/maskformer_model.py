@@ -50,6 +50,7 @@ class MaskFormer(nn.Module):
         current_catagory_ids: list = None,
         task: int = 1,
         psd_overlap_threshold: float = 0.8,
+        collect_query_mode: bool = False,
     ):
         """
         Args:
@@ -112,6 +113,10 @@ class MaskFormer(nn.Module):
         self.psd_overlap_threshold = psd_overlap_threshold
         # self.writer = SummaryWriter(log_dir=f"output/ps/100-10_psd0.8/step{task}")
         self.count = 0
+
+        self.collect_query_mode = collect_query_mode
+        if self.collect_query_mode:
+            self.collect = {}   
     @classmethod
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
@@ -191,6 +196,7 @@ class MaskFormer(nn.Module):
             "current_catagory_ids": current_catagory_ids,
             "task": cfg.CONT.TASK,
             "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP,
+            "collect_query_mode": cfg.CONT.COLLECT_QUERY_MODE,
         }
 
     @property
@@ -233,6 +239,10 @@ class MaskFormer(nn.Module):
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
+            if self.collect_query_mode:
+                outputs = self.sem_seg_head(features)
+            else:
+                outputs = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
             outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
             # mask classification target
             if "instances" in batched_inputs[0]:

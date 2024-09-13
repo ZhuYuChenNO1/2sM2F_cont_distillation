@@ -74,7 +74,7 @@ class Trainer(DefaultTrainer):
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for d2
             setup_logger()
 
-        if cfg.CONT.TASK > 1:
+        if cfg.CONT.TASK > 1 and not cfg.CONT.COLLECT_QUERY_MODE:
             cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
             cfg_old = cfg.clone()
             cfg_old.defrost()
@@ -94,8 +94,9 @@ class Trainer(DefaultTrainer):
         data_loader = self.build_train_loader(cfg)
 
         model = create_ddp_model(model, broadcast_buffers=False)
+        self.cfg = cfg
         self._trainer = (AMPTrainer if cfg.SOLVER.AMP.ENABLED else SimpleTrainer)(
-            model, model_old, data_loader, optimizer
+            model, model_old, data_loader, optimizer, self.cfg.CONT.COLLECT_QUERY_MODE
         )
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
@@ -107,7 +108,6 @@ class Trainer(DefaultTrainer):
         )
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
-        self.cfg = cfg
 
         self.register_hooks(self.build_hooks())
 

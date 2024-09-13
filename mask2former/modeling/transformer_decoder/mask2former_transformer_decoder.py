@@ -432,16 +432,15 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         self.bbox_embed = nn.ModuleList(box_embed_layerlist)
 
         import pickle
-        with open('/root/projets/2sM2F_cont_distillation/step1Query.pkl', 'rb') as f:
+        with open('step1Query.pkl', 'rb') as f:
             step1 = pickle.load(f)
-        with open('/root/projets/2sM2F_cont_distillation/step2Query.pkl', 'rb') as f:
-            step2 = pickle.load(f)
-        step1.update(step2)
+        # with open('/root/projets/2sM2F_cont_distillation/step2Query.pkl', 'rb') as f:
+        #     step2 = pickle.load(f)
+        # step1.update(step2)
         self.fake_query = step1
         # self.fake_query = nn.Parameter(self.query_feat)
         # self.bbox_embed = None
-    
-        self.count = 0
+
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
         ret = {}

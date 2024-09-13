@@ -259,7 +259,7 @@ class AMPTrainer(SimpleTrainer):
     in the training loop.
     """
 
-    def __init__(self, model, model_old, data_loader, optimizer, grad_scaler=None):
+    def __init__(self, model, model_old, data_loader, optimizer, collect_query_mode=False, grad_scaler=None):
         """
         Args:
             model, data_loader, optimizer: same as in :class:`SimpleTrainer`.
@@ -277,6 +277,7 @@ class AMPTrainer(SimpleTrainer):
 
             grad_scaler = GradScaler()
         self.grad_scaler = grad_scaler
+        self.collect_query_mode = collect_query_mode
 
     def run_step(self):
         """
@@ -302,13 +303,14 @@ class AMPTrainer(SimpleTrainer):
             else:
                 losses = sum(loss_dict.values())
 
-        self.optimizer.zero_grad()
-        self.grad_scaler.scale(losses).backward()
+        if not self.collect_query_mode:
+            self.optimizer.zero_grad()
+            self.grad_scaler.scale(losses).backward()
 
-        self._write_metrics(loss_dict, data_time)
+            self._write_metrics(loss_dict, data_time)
 
-        self.grad_scaler.step(self.optimizer)
-        self.grad_scaler.update()
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
 
     def state_dict(self):
         ret = super().state_dict()
