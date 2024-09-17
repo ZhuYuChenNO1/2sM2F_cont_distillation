@@ -20,6 +20,9 @@ from .utils import box_ops
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+from collections import deque
+import pickle
+import torch.distributed as dist
 
 @META_ARCH_REGISTRY.register()
 class MaskFormer(nn.Module):
@@ -47,6 +50,7 @@ class MaskFormer(nn.Module):
         panoptic_on: bool,
         instance_on: bool,
         test_topk_per_image: int,
+        output_dir:str,
         current_catagory_ids: list = None,
         task: int = 1,
         psd_overlap_threshold: float = 0.8,
@@ -104,6 +108,8 @@ class MaskFormer(nn.Module):
         if current_catagory_ids is not None:
             self.current_catagory_ids = torch.tensor(current_catagory_ids)
         
+        self.output_dir = output_dir
+        
         self.save = {
             'gt': 0,
             'pesudo': 0
@@ -113,10 +119,73 @@ class MaskFormer(nn.Module):
         self.psd_overlap_threshold = psd_overlap_threshold
         # self.writer = SummaryWriter(log_dir=f"output/ps/100-10_psd0.8/step{task}")
         self.count = 0
+        self.psd_num = torch.zeros(150)
 
         self.collect_query_mode = collect_query_mode
-        if self.collect_query_mode:
-            self.collect = {}   
+        if self.task < 10:
+            query_root = self.output_dir[:-1] + f"{task-1}"
+        else:
+            query_root = self.output_dir[:-2] + f"{task-1}"
+
+        # def load_query_lib(query_root, rank, device='cpu'):
+        #     if rank == 0:
+        #         try:
+        #             with open(f"{query_root}/fake_query.pkl", 'rb') as f:
+        #                 query_lib = pickle.load(f)
+        #                 print(f"Rank {rank}: Loaded query_lib with {len(query_lib)} entries.")
+        #         except FileNotFoundError:
+        #             print(f"Rank {rank}: File {query_root}/fake_query.pkl not found.")
+        #             query_lib = {}
+        #         except Exception as e:
+        #             print(f"Rank {rank}: Error loading query_lib: {e}")
+        #             query_lib = {}
+                
+        #         # 序列化字典为字节流
+        #         serialized_query_lib = pickle.dumps(query_lib)
+        #         serialized_size = torch.tensor([len(serialized_query_lib)], dtype=torch.long, device=device)
+        #     else:
+        #         query_lib = {}
+        #         # 准备接收的张量大小
+        #         serialized_size = torch.tensor([0], dtype=torch.long, device=device)
+
+        #     # 广播字节流大小
+        #     dist.broadcast(serialized_size, src=0)
+
+        #     # 在非主进程分配接收缓冲区
+        #     serialized_query_lib = torch.empty(serialized_size.item(), dtype=torch.uint8, device=device) if rank != 0 else torch.tensor(list(serialized_query_lib), dtype=torch.uint8, device=device)
+
+        #     # 广播字节流
+        #     dist.broadcast(serialized_query_lib, src=0)
+
+        #     # 在非主进程反序列化字节流为字典
+            # if rank != 0:
+            #     serialized_query_lib = bytes(serialized_query_lib.cpu().numpy())
+            #     query_lib = pickle.loads(serialized_query_lib)
+            #     print(f"Rank {rank}: Received query_lib with {len(query_lib)} entries.")
+
+            # return query_lib
+
+        # if self.task > 1:
+        #     rank = dist.get_rank()
+        #     # 使用 'cuda' 或 'cpu' 作为设备
+        #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        #     self.collect = load_query_lib(query_root, rank, device)
+
+        #     if rank == 0 and self.collect:
+        #         try:
+        #             print([len(self.collect[q]) for q in self.collect.keys()])
+        #         except KeyError as e:
+        #             print(f"Rank {rank}: KeyError when accessing query_lib: {e}")
+        #         except Exception as e:
+        #             print(f"Rank {rank}: Error in accessing query_lib: {e}")  
+
+        # self.collect = {}
+        if self.task > 1:
+            # self.collect = {}
+            # self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
+            with open(f"{query_root}/fake_query.pkl", 'rb') as f:
+                self.collect = pickle.load(f)    
+            # self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cuda:{}'.format(dist.get_rank()))
     @classmethod
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
@@ -197,6 +266,7 @@ class MaskFormer(nn.Module):
             "task": cfg.CONT.TASK,
             "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP,
             "collect_query_mode": cfg.CONT.COLLECT_QUERY_MODE,
+            "output_dir": cfg.OUTPUT_DIR,
         }
 
     @property
@@ -239,20 +309,49 @@ class MaskFormer(nn.Module):
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
-            if self.collect_query_mode:
-                outputs = self.sem_seg_head(features)
-            else:
-                outputs = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
-            outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
+            outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=topk_feats_info['topk_proposals'])
+            # outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
             # mask classification target
+            # if "instances" in batched_inputs[0]:
+            #     gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+            #     targets = self.prepare_targets(gt_instances, images)
+            # else:
+            #     targets = None
+
+            # ****************store fake query****************
             if "instances" in batched_inputs[0]:
-                gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-                targets = self.prepare_targets(gt_instances, images)
+                    gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+                    targets = self.prepare_targets(gt_instances, images)
             else:
                 targets = None
-
+            outputs_without_aux = {k: v for k, v in outputs.items() if 'pred' in k}
+            indices = self.criterion.matcher(outputs_without_aux, targets)
+            for index, (indice, target) in enumerate(zip(indices, targets)):
+                labels = target['labels']
+                for q, l in zip(*indice):
+                    gt_class = labels[l].item()
+                    if gt_class not in self.collect:
+                        if dist.is_initialized():
+                            world_size = dist.get_world_size()
+                        else:
+                            world_size = 1 
+                        maxlen = 100
+                        self.collect[gt_class] = deque(maxlen=maxlen)
+                    
+                    self.collect[gt_class].append({
+                        'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
+                        'scores': outputs['pred_logits'][index][q][gt_class].item()
+                    })
+            # ****************store fake query****************
             if old_pred is not None:
                 psd_targets, old_targets = self.generate_psd_targets(targets, old_pred, gt_instances)
+
+                # Save the distribution of pseudo labels
+                if self.collect_query_mode:
+                    for t in psd_targets:
+                        for i in t['labels']:
+                            self.psd_num[i] += 1
+                    self.count += 1
 
                 # bipartite matching-based loss
                 

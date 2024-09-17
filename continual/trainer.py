@@ -58,7 +58,8 @@ from .continual_semantic_dataset_mapper import ContinualSemanticDatasetMapper
 from .continual_instance_dataset_mapper import ContinualInstanceDatasetMapper
 from .evaluator import SemSegEvaluator, COCOPanopticEvaluator, InstanceSegEvaluator
 from .train_loop import SimpleTrainer, AMPTrainer
-
+import torch.distributed as dist
+import collections
 
 class Trainer(DefaultTrainer):
 
@@ -74,11 +75,15 @@ class Trainer(DefaultTrainer):
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for d2
             setup_logger()
 
-        if cfg.CONT.TASK > 1 and not cfg.CONT.COLLECT_QUERY_MODE:
+        if cfg.CONT.TASK > 1:
             cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
             cfg_old = cfg.clone()
             cfg_old.defrost()
             cfg_old.CONT.TASK = cfg.CONT.TASK - 1
+            if cfg.CONT.TASK < 10:
+                cfg_old.OUTPUT_DIR = cfg.OUTPUT_DIR[:-1] + f"{cfg_old.CONT.TASK}"
+            else:
+                cfg_old.OUTPUT_DIR = cfg.OUTPUT_DIR[:-2] + f"{cfg_old.CONT.TASK}"
             cfg_old.freeze()
 
             model_old = self.build_model(cfg_old).eval()
@@ -450,3 +455,58 @@ class Trainer(DefaultTrainer):
         if len(results) == 1:
             results = list(results.values())[0]
         return results
+
+    def after_train(self):
+        logger = logging.getLogger("detectron2.trainer")
+        self.storage.iter = self.iter
+        if self.cfg.CONT.COLLECT_QUERY_MODE and self.iter == self.cfg.SOLVER.MAX_ITER:
+            import json
+            root = self.cfg.OUTPUT_DIR
+            file = os.path.join(root, "psd_distribution.json")
+            if not os.path.exists(file):
+                os.makedirs(os.path.dirname(file), exist_ok=True)
+            save = self.model.psd_num
+
+            if self.cfg.CONT.CUMULATIVE_PSDNUM == True and self.cfg.CONT.TASK > 2:
+                old_root = root[:-1] + str(self.cfg.CONT.TASK-1)
+                old_file = os.path.join(old_root, "psd_distribution.json")
+                old_save = json.load(open(old_file, 'r'))
+                save += torch.tensor(old_save)
+            with open(file, 'w+') as f:
+                json.dump(save.tolist(), f)
+                logger.info("Save psd_distribution.json to {}".format(file))
+                exit()
+        elif self.iter == self.cfg.SOLVER.MAX_ITER:
+            import pickle
+
+            # collect = self.model.module.collect  # collec:dict, key: deque
+            # if dist.is_initialized():
+            #     print("Dist initialized, gathering collect data...")
+            #     # 收集所有进程的collect数据
+            #     gathered_collect = [None for _ in range(dist.get_world_size())]
+            #     print("Gathered collect data, combining...")
+            #     dist.all_gather_object(gathered_collect, collect)
+
+            # if dist.get_rank() == 0:
+            #     # combine collect
+            #     combined_collect = collections.defaultdict(collections.deque)
+                
+            #     for gpu_collect in gathered_collect:
+            #         for key, deque_value in gpu_collect.items():
+            #             combined_collect[key].extend(deque_value)
+
+            #     file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
+            #     with open(file, 'wb') as f:
+            #         pickle.dump(combined_collect, f)
+            #     logger.info(f"Save fake_query.pkl to {file}")
+
+            file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
+            with open(file, 'wb') as f:
+                pickle.dump(self.model.module.collect, f)
+            logger.info(f"Save fake_query.pkl to {file}")
+
+            # file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
+            # with open(file, 'wb') as f:
+                # pickle.dump(self.model.module.collect, f)
+        for h in self._hooks:
+            h.after_train()

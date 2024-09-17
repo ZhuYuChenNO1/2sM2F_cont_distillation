@@ -274,6 +274,9 @@ class COCOPanopticEvaluator(COCOPanopticEvaluator):
 
         from rich import print
         select_ids = [35, 37, 44, 46, 49, 50, 51, 56, 58, 60, 64, 65, 68, 70, 71, 73, 77,78, 79, 81, 91, 92, 96, 97, 99]
+        # select_ids= [ 6, 13, 20, 21, 29, 31, 34, 38, 40, 45, 46, 48, 51, 52, 54, 55, 58, 59,
+        #  60, 61, 65, 68, 70, 76, 77, 78, 79, 80, 81, 83, 84, 85, 86, 87, 88, 90,
+        #  91, 92, 93, 94, 96, 99]
         not_selected = [i for i in range(100) if i not in select_ids]
         for i, p in enumerate(pq_res['per_class'].values()):
             logger.info(f'category {i} PQ: {p["pq"] * 100:.3f} SQ: {p["sq"] * 100:.3f} RQ: {p["rq"] * 100:.3f}')

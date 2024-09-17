@@ -303,7 +303,6 @@ class AMPTrainer(SimpleTrainer):
             else:
                 losses = sum(loss_dict.values())
 
-        if not self.collect_query_mode:
             self.optimizer.zero_grad()
             self.grad_scaler.scale(losses).backward()
 

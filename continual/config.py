@@ -14,3 +14,5 @@ def add_continual_config(cfg):
     cfg.CONT.MEMORY = False
     cfg.CONT.PSD_OVERLAP = 0.8
     cfg.CONT.COLLECT_QUERY_MODE = False
+    cfg.CONT.CUMULATIVE_PSDNUM = False
+    cfg.CONT.WEIGHTED_SAMPLE = True

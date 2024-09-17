@@ -19,6 +19,7 @@ import math
 import os
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+import torch.distributed as dist
 
 import random
 
@@ -285,6 +286,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         text_path: str,
         use_text_embedding: False,
         clip_embedding_dim: int,
+        output_dir: str,
+        collect_query_mode: bool,
+        weighted_sample: bool,
     ):
         """
         NOTE: this interface is experimental.
@@ -309,7 +313,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         self.mask_classification = mask_classification
 
         # if torch.cuda.current_device() == 0:
-        #     self.writer = SummaryWriter(log_dir=f"runs/100-5/step_{len(n_cls_in_tasks)}")
+        #     self.writer = SummaryWriter(log_dir=f"output/ps/100-5_passSelfCross_filterQuery_newTry/step_{len(n_cls_in_tasks)}")
         # positional encoding
         N_steps = hidden_dim // 2
         self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
@@ -430,17 +434,97 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         nn.init.constant_(_bbox_embed.layers[-1].bias.data, 0)
         box_embed_layerlist = [_bbox_embed for _ in range(self.num_layers)]  # share box prediction each layer
         self.bbox_embed = nn.ModuleList(box_embed_layerlist)
+        self.output_dir = output_dir
+        self.collect_query_mode = collect_query_mode
+        self.weighted_sample = weighted_sample
+        # print(f"437collect_query_mode: {collect_query_mode}")
 
         import pickle
-        with open('step1Query.pkl', 'rb') as f:
-            step1 = pickle.load(f)
-        # with open('/root/projets/2sM2F_cont_distillation/step2Query.pkl', 'rb') as f:
-        #     step2 = pickle.load(f)
-        # step1.update(step2)
-        self.fake_query = step1
+        import json
+        # with open('step1Query.pkl', 'rb') as f:
+        #     step1 = pickle.load(f)
+
+        if self.n_cls_in_tasks.sum().item() > 100 and not self.collect_query_mode[0]:
+            print("Use PSD distribution")
+            with open(os.path.join(output_dir, 'psd_distribution.json'), 'r') as f:
+                psd_dis = json.load(f)
+                psd_dis = torch.tensor(psd_dis[:int(self.n_cls_in_tasks.sum().item())-5]) + 1
+            self.psd_dis = torch.sqrt(psd_dis.sum()/psd_dis)
+        else:
+            print("No PSD distribution", self.n_cls_in_tasks, self.collect_query_mode[0], type(self.collect_query_mode))
+            self.psd_dis = torch.tensor([1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0])
+
+        # self.watch = torch.zeros(150)
+        # self.count = 0
         # self.fake_query = nn.Parameter(self.query_feat)
         # self.bbox_embed = None
 
+        self.task = len(n_cls_in_tasks)
+        if self.task < 10:
+            query_root = self.output_dir[:-1] + f"{self.task-1}"
+        else:
+            query_root = self.output_dir[:-2] + f"{self.task-1}"
+
+        # def load_query_lib(query_root, rank, device='cpu'):
+        #     if rank == 0:
+        #         try:
+        #             with open(f"{query_root}/fake_query.pkl", 'rb') as f:
+        #                 query_lib = pickle.load(f)
+        #                 print(f"Rank {rank}: Loaded query_lib with {len(query_lib)} entries.")
+        #         except FileNotFoundError:
+        #             print(f"Rank {rank}: File {query_root}/fake_query.pkl not found.")
+        #             query_lib = {}
+        #         except Exception as e:
+        #             print(f"Rank {rank}: Error loading query_lib: {e}")
+        #             query_lib = {}
+                
+        #         # 序列化字典为字节流
+        #         serialized_query_lib = pickle.dumps(query_lib)
+        #         serialized_size = torch.tensor([len(serialized_query_lib)], dtype=torch.long, device=device)
+        #     else:
+        #         query_lib = {}
+        #         # 准备接收的张量大小
+        #         serialized_size = torch.tensor([0], dtype=torch.long, device=device)
+
+        #     # 广播字节流大小
+        #     dist.broadcast(serialized_size, src=0)
+
+        #     # 在非主进程分配接收缓冲区
+        #     serialized_query_lib = torch.empty(serialized_size.item(), dtype=torch.uint8, device=device) if rank != 0 else torch.tensor(list(serialized_query_lib), dtype=torch.uint8, device=device)
+
+        #     # 广播字节流
+        #     dist.broadcast(serialized_query_lib, src=0)
+
+        #     # 在非主进程反序列化字节流为字典
+        #     if rank != 0:
+        #         serialized_query_lib = bytes(serialized_query_lib.cpu().numpy())
+        #         query_lib = pickle.loads(serialized_query_lib)
+        #         print(f"Rank {rank}: Received query_lib with {len(query_lib)} entries.")
+
+        #     return query_lib
+
+        # if self.task > 1:
+        #     rank = dist.get_rank()
+        #     # 使用 'cuda' 或 'cpu' 作为设备
+        #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        #     self.query_lib = load_query_lib(query_root, rank, device)
+
+        #     if rank == 0 and self.query_lib:
+        #         try:
+        #             print([len(self.query_lib[q]) for q in self.query_lib.keys()])
+        #         except KeyError as e:
+        #             print(f"Rank {rank}: KeyError when accessing query_lib: {e}")
+        #         except Exception as e:
+        #             print(f"Rank {rank}: Error in accessing query_lib: {e}")  
+
+        if self.task > 1:
+            # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU
+            with open(f"{query_root}/fake_query.pkl", 'rb') as f:
+                self.query_lib = pickle.load(f)    
+            # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cuda:{}'.format(dist.get_rank()))
+            print([len(self.query_lib[q]) for q in self.query_lib])
+        else:
+            self.query_lib = None
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
         ret = {}
@@ -478,17 +562,18 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         ret['use_text_embedding'] = cfg.MODEL.MASK_FORMER.USE_TEXT_EMBEDDING
         ret['text_path'] = cfg.MODEL.MASK_FORMER.TEXT_PATH
         ret['clip_embedding_dim'] = cfg.MODEL.MASK_FORMER.CLIP_DIM
-
+        ret['output_dir'] = cfg.OUTPUT_DIR
+        ret["collect_query_mode"] = cfg.CONT.COLLECT_QUERY_MODE,
+        ret['weighted_sample'] = cfg.CONT.WEIGHTED_SAMPLE
+        # print(f"collect_query_mode: {cfg.CONT.COLLECT_QUERY_MODE}")
         return ret
 
-    def forward(self, x, mask_features, mask = None, distill_position = None):
+    def forward(self, x, mask_features, mask = None, distill_position = None, query_lib = None):
         # x is a list of multi-scale feature
         assert len(x) == self.num_feature_levels
         src = []
         pos = []
         size_list = []
-
-        
 
         # disable mask, it does not affect performance
         del mask
@@ -505,12 +590,26 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         _, bs, _ = src[0].shape
 
         # get fake query with bs
-        fake_target = random.sample(self.fake_query.keys(), bs)
-        fake_query = []
-        for i in fake_target:
-            info = random.sample(self.fake_query[i], 1)[0]
-            fake_query.append([info['med_feats']])
-        fake_query = torch.as_tensor(fake_query, device=src[0].device)
+        # fake_target = random.sample(self.fake_query.keys(), bs)
+        # fake_targets = random.sample([52 , 48 , 61 , 55 , 45 ,  78 , 34 , 77,  84 , 79,  58, 99], bs)
+        # fake_targets = random.sample([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 27, 28, 30, 31, 32, 36, 38, 39, 40, 41, 42, 43, 47, 53, 57, 66, 67, 69, 82, 85, 89, 93, 98])
+        if self.query_lib is not None:
+            if not self.weighted_sample:
+                # print("Use random query", self.weighted_sample)
+                sampleWeight = torch.ones_like(self.psd_dis)
+            else:
+                # print("Use weighted query", self.weighted_sample)
+                sampleWeight = self.psd_dis
+            fake_targets = torch.multinomial(sampleWeight, bs, replacement=False)
+            # self.watch[fake_targets] += 1
+            fake_query = []
+            for i in fake_targets:
+                info = random.sample(self.query_lib[int(i)], 1)[0]
+                fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device))  # 去掉外面的 []
+
+            # 将列表中的张量进行拼接
+            fake_query = torch.stack(fake_query, dim=0).unsqueeze(1)
+
         # bs * 1 * dim
 
         # QxNxC
@@ -539,6 +638,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             enc_outputs_class_unselected =self.class_embed(self.decoder_norm(output_memory)) # (bs, \sum{hw}, num_classes)
             if distill_position is not None:
                 distill_logits = torch.gather(enc_outputs_class_unselected, 1, distill_position.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
+            else:
+                distill_logits = None
             # enc_outputs_class_unselected = torch.cat((-torch.ones((bs, n_points,100), device=enc_outputs_class_unselected.device)*100, enc_outputs_class_unselected), dim=-1)
         # enc_outputs_class_unselected = self.class_embed(output_memory)  # (bs, \sum{hw}, num_classes)
         # enc_outputs_class_unselected[..., -10:] *= 0.6
@@ -550,7 +651,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # *******************Tensorboard******************
         # device = torch.cuda.current_device()
-        # if device == 0 and enc_outputs_class_unselected.shape[-1]>101:
+        # if device == 0 and self.training:
+        #     self.count += 1
+        #     self.writer.add_histogram('activated_fake_query' ,self.watch.cpu().numpy().astype(np.int32)  , self.count)
         #     idx = enc_outputs_class_unselected.max(-1)[1]
         #     idx = torch.gather(idx, 1, topk_proposals)
             
@@ -633,23 +736,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
         predictions_box = []
 
-        # temp = {'ret_enc_class': ret_enc_class.detach(),
-        # 'encoder_class': enc_output_class.detach(),}
-        # torch.save(temp, 'twostageinfo/temp.pth')
-        # exit()
-        # prediction heads on learnable query features
-        # outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
-        # predictions_class.append(outputs_class)
-        # predictions_mask.append(outputs_mask)
-
-        # reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
-        # delta_unsig = self._bbox_embed(output)
-        # outputs_unsig = delta_unsig + reference_before_sigmoid
-        # new_reference_points = outputs_unsig.sigmoid()
-
-        # refpoint_embed = new_reference_points.detach()
-        # predictions_box.append(new_reference_points.transpose(0, 1))
-
         # ***************visualize*********************
         # try:
         #     with open('twostageinfo/filename.txt', 'r')as f:
@@ -708,21 +794,27 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
             
             # attention: cross-attention first
-            output = self.transformer_self_attention_layers[i](
-                output, tgt_mask=None,
-                tgt_key_padding_mask=None,
-                query_pos=query_embed
-            )
             if self.training:
                 fake_query_embed = output[-1].unsqueeze(0) # 1 * bs * dim
+
+                output = self.transformer_self_attention_layers[i](
+                    output[:-1], tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=query_embed[:-1]
+                )
                 output = self.transformer_cross_attention_layers[i](
-                    output[:-1], src[level_index],
+                    output, src[level_index],
                     memory_mask=attn_mask[:,:-1,:],
                     memory_key_padding_mask=None,  # here we do not apply masking on padded region
                     pos=pos[level_index], query_pos=query_embed[:-1]
                 )
                 output = torch.cat([output, fake_query_embed], dim=0)
             else:
+                output = self.transformer_self_attention_layers[i](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=query_embed
+                )
                 output = self.transformer_cross_attention_layers[i](
                     output, src[level_index],
                     memory_mask=attn_mask,
@@ -805,7 +897,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 'distill_logits': distill_logits,
             }
             
-            return out, fake_target
+            return out, fake_targets
 
     def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
         decoder_output = self.decoder_norm(output)
