@@ -16,3 +16,4 @@ def add_continual_config(cfg):
     cfg.CONT.COLLECT_QUERY_MODE = False
     cfg.CONT.CUMULATIVE_PSDNUM = False
     cfg.CONT.WEIGHTED_SAMPLE = True
+    cfg.CONT.LIB_SIZE = 80

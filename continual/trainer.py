@@ -479,34 +479,33 @@ class Trainer(DefaultTrainer):
         elif self.iter == self.cfg.SOLVER.MAX_ITER:
             import pickle
 
-            # collect = self.model.module.collect  # collec:dict, key: deque
-            # if dist.is_initialized():
-            #     print("Dist initialized, gathering collect data...")
-            #     # 收集所有进程的collect数据
-            #     gathered_collect = [None for _ in range(dist.get_world_size())]
-            #     print("Gathered collect data, combining...")
-            #     dist.all_gather_object(gathered_collect, collect)
+            collect = self.model.module.collect  # collec:dict, key: deque
+            if dist.is_initialized():
+                print("Dist initialized, gathering collect data...")
+                # 收集所有进程的collect数据
+                gathered_collect = [None for _ in range(dist.get_world_size())]
+                print("Gathered collect data, combining...")
+                dist.all_gather_object(gathered_collect, collect)
 
-            # if dist.get_rank() == 0:
-            #     # combine collect
-            #     combined_collect = collections.defaultdict(collections.deque)
+            if dist.get_rank() == 0:
+                # combine collect
+                combined_collect = collections.defaultdict(deque_factory)
                 
-            #     for gpu_collect in gathered_collect:
-            #         for key, deque_value in gpu_collect.items():
-            #             combined_collect[key].extend(deque_value)
+                for gpu_collect in gathered_collect:
+                    for key, deque_value in gpu_collect.items():
+                        combined_collect[key].extend(deque_value)
 
-            #     file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
-            #     with open(file, 'wb') as f:
-            #         pickle.dump(combined_collect, f)
-            #     logger.info(f"Save fake_query.pkl to {file}")
-
-            file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
-            with open(file, 'wb') as f:
-                pickle.dump(self.model.module.collect, f)
-            logger.info(f"Save fake_query.pkl to {file}")
+                file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
+                torch.save(combined_collect, file)
+                # with open(file, 'wb') as f:
+                #     pickle.dump(combined_collect, f)
+                logger.info(f"Save fake_query.pkl to {file}")
 
             # file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
             # with open(file, 'wb') as f:
                 # pickle.dump(self.model.module.collect, f)
         for h in self._hooks:
             h.after_train()
+
+def deque_factory(maxlen=80):
+    return collections.deque(maxlen=maxlen)

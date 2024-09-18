@@ -211,6 +211,9 @@ class SetCriterion(nn.Module):
                     omit_query[i][j]=0
         # print(f"omit_query: {(omit_query==0).sum()}")
         query_mask = omit_query.unsqueeze(-1).repeat(1, 1, src_logits.shape[-1])
+
+        """We don't use query mask"""
+        query_mask = None
         
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
@@ -463,10 +466,14 @@ class SetCriterion(nn.Module):
     def _remove_fake_query(self, outputs):
         ret = {}
         for k, v in outputs.items():
-            ret[k] = v[:, :-1]
+            fake_num = v.shape[1] - 100
+            ret[k] = v[:, :-fake_num] if fake_num > 0 else v
         return ret
     
     def _modify_indices_targets_for_fake_query(self, indices, targets, fake_query_labels):
+        if fake_query_labels is None:
+            return indices, targets
+
         assert len(fake_query_labels) == len(targets) == len(indices)
 
         new_indices = []

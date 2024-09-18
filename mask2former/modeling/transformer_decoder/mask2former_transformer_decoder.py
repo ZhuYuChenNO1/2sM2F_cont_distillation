@@ -517,14 +517,14 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         #         except Exception as e:
         #             print(f"Rank {rank}: Error in accessing query_lib: {e}")  
 
-        if self.task > 1:
-            # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU
-            with open(f"{query_root}/fake_query.pkl", 'rb') as f:
-                self.query_lib = pickle.load(f)    
-            # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cuda:{}'.format(dist.get_rank()))
-            print([len(self.query_lib[q]) for q in self.query_lib])
-        else:
-            self.query_lib = None
+        # if self.task > 1:
+        #     # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU
+        #     with open(f"{query_root}/fake_query.pkl", 'rb') as f:
+        #         self.query_lib = pickle.load(f)    
+        #     # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cuda:{}'.format(dist.get_rank()))
+        #     print([len(self.query_lib[q]) for q in self.query_lib])
+        # else:
+        #     self.query_lib = None
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
         ret = {}
@@ -593,7 +593,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # fake_target = random.sample(self.fake_query.keys(), bs)
         # fake_targets = random.sample([52 , 48 , 61 , 55 , 45 ,  78 , 34 , 77,  84 , 79,  58, 99], bs)
         # fake_targets = random.sample([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 27, 28, 30, 31, 32, 36, 38, 39, 40, 41, 42, 43, 47, 53, 57, 66, 67, 69, 82, 85, 89, 93, 98])
-        if self.query_lib is not None:
+        if query_lib is not None:
             if not self.weighted_sample:
                 # print("Use random query", self.weighted_sample)
                 sampleWeight = torch.ones_like(self.psd_dis)
@@ -604,11 +604,14 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             # self.watch[fake_targets] += 1
             fake_query = []
             for i in fake_targets:
-                info = random.sample(self.query_lib[int(i)], 1)[0]
+                info = random.sample(query_lib[int(i)], 1)[0]
                 fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device))  # 去掉外面的 []
 
             # 将列表中的张量进行拼接
             fake_query = torch.stack(fake_query, dim=0).unsqueeze(1)
+            fake_query = fake_query.detach()
+        else:
+            fake_targets = None
 
         # bs * 1 * dim
 
@@ -703,7 +706,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         tgt_undetach = torch.gather(output_memory, 1,
                                   topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
         # concat with fake query
-        if self.training:
+        if self.training and self.task >1:
             tgt_undetach = torch.cat([tgt_undetach, fake_query], dim=1)
 
         refpoint_embed_unsig_undetach = torch.gather(enc_outputs_coord_unselected, 1,
@@ -712,7 +715,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
         output = tgt_undetach.permute(1, 0, 2).detach()
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
-        if self.training:
+        if self.training and self.task >1:
             refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, 1))
 
         #**************************
@@ -730,7 +733,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         interm_outputs=dict()
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
-        interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,1,0,0))
+        interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,1,0,0)) \
+            if self.task > 1 else refpoint_embed_unsig_undetach.sigmoid()
         # print('modify here')
         predictions_class = []
         predictions_mask = []
@@ -794,7 +798,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
             
             # attention: cross-attention first
-            if self.training:
+            if self.training and self.task >1:
                 fake_query_embed = output[-1].unsqueeze(0) # 1 * bs * dim
 
                 output = self.transformer_self_attention_layers[i](

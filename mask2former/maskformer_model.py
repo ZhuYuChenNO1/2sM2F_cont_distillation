@@ -55,6 +55,7 @@ class MaskFormer(nn.Module):
         task: int = 1,
         psd_overlap_threshold: float = 0.8,
         collect_query_mode: bool = False,
+        lib_size: int = 80,
     ):
         """
         Args:
@@ -127,65 +128,12 @@ class MaskFormer(nn.Module):
         else:
             query_root = self.output_dir[:-2] + f"{task-1}"
 
-        # def load_query_lib(query_root, rank, device='cpu'):
-        #     if rank == 0:
-        #         try:
-        #             with open(f"{query_root}/fake_query.pkl", 'rb') as f:
-        #                 query_lib = pickle.load(f)
-        #                 print(f"Rank {rank}: Loaded query_lib with {len(query_lib)} entries.")
-        #         except FileNotFoundError:
-        #             print(f"Rank {rank}: File {query_root}/fake_query.pkl not found.")
-        #             query_lib = {}
-        #         except Exception as e:
-        #             print(f"Rank {rank}: Error loading query_lib: {e}")
-        #             query_lib = {}
-                
-        #         # 序列化字典为字节流
-        #         serialized_query_lib = pickle.dumps(query_lib)
-        #         serialized_size = torch.tensor([len(serialized_query_lib)], dtype=torch.long, device=device)
-        #     else:
-        #         query_lib = {}
-        #         # 准备接收的张量大小
-        #         serialized_size = torch.tensor([0], dtype=torch.long, device=device)
 
-        #     # 广播字节流大小
-        #     dist.broadcast(serialized_size, src=0)
-
-        #     # 在非主进程分配接收缓冲区
-        #     serialized_query_lib = torch.empty(serialized_size.item(), dtype=torch.uint8, device=device) if rank != 0 else torch.tensor(list(serialized_query_lib), dtype=torch.uint8, device=device)
-
-        #     # 广播字节流
-        #     dist.broadcast(serialized_query_lib, src=0)
-
-        #     # 在非主进程反序列化字节流为字典
-            # if rank != 0:
-            #     serialized_query_lib = bytes(serialized_query_lib.cpu().numpy())
-            #     query_lib = pickle.loads(serialized_query_lib)
-            #     print(f"Rank {rank}: Received query_lib with {len(query_lib)} entries.")
-
-            # return query_lib
-
-        # if self.task > 1:
-        #     rank = dist.get_rank()
-        #     # 使用 'cuda' 或 'cpu' 作为设备
-        #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        #     self.collect = load_query_lib(query_root, rank, device)
-
-        #     if rank == 0 and self.collect:
-        #         try:
-        #             print([len(self.collect[q]) for q in self.collect.keys()])
-        #         except KeyError as e:
-        #             print(f"Rank {rank}: KeyError when accessing query_lib: {e}")
-        #         except Exception as e:
-        #             print(f"Rank {rank}: Error in accessing query_lib: {e}")  
-
-        # self.collect = {}
-        if self.task > 1:
-            # self.collect = {}
-            # self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
-            with open(f"{query_root}/fake_query.pkl", 'rb') as f:
-                self.collect = pickle.load(f)    
-            # self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cuda:{}'.format(dist.get_rank()))
+        with torch.no_grad():
+            self.collect = {}
+            if self.task > 1:
+                self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
+        self.lib_size = lib_size
     @classmethod
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
@@ -267,6 +215,7 @@ class MaskFormer(nn.Module):
             "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP,
             "collect_query_mode": cfg.CONT.COLLECT_QUERY_MODE,
             "output_dir": cfg.OUTPUT_DIR,
+            "lib_size" : cfg.CONT.LIB_SIZE,
         }
 
     @property
@@ -309,40 +258,21 @@ class MaskFormer(nn.Module):
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
-            outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=topk_feats_info['topk_proposals'])
-            # outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions = topk_feats_info['topk_proposals'])
+            if topk_feats_info is not None:
+                distill_positions = topk_feats_info['topk_proposals']
+            else:
+                distill_positions = None
+            if self.task>1:
+                outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions, query_lib=self.collect)
+            else:
+                outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions)
             # mask classification target
-            # if "instances" in batched_inputs[0]:
-            #     gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-            #     targets = self.prepare_targets(gt_instances, images)
-            # else:
-            #     targets = None
-
-            # ****************store fake query****************
             if "instances" in batched_inputs[0]:
-                    gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-                    targets = self.prepare_targets(gt_instances, images)
+                gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+                targets = self.prepare_targets(gt_instances, images)
             else:
                 targets = None
-            outputs_without_aux = {k: v for k, v in outputs.items() if 'pred' in k}
-            indices = self.criterion.matcher(outputs_without_aux, targets)
-            for index, (indice, target) in enumerate(zip(indices, targets)):
-                labels = target['labels']
-                for q, l in zip(*indice):
-                    gt_class = labels[l].item()
-                    if gt_class not in self.collect:
-                        if dist.is_initialized():
-                            world_size = dist.get_world_size()
-                        else:
-                            world_size = 1 
-                        maxlen = 100
-                        self.collect[gt_class] = deque(maxlen=maxlen)
-                    
-                    self.collect[gt_class].append({
-                        'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
-                        'scores': outputs['pred_logits'][index][q][gt_class].item()
-                    })
-            # ****************store fake query****************
+
             if old_pred is not None:
                 psd_targets, old_targets = self.generate_psd_targets(targets, old_pred, gt_instances)
 
@@ -353,24 +283,43 @@ class MaskFormer(nn.Module):
                             self.psd_num[i] += 1
                     self.count += 1
 
-                # bipartite matching-based loss
-                
-                # In baseline we don't use query 回溯 loss
-                # device = torch.cuda.current_device()
-                # if device == 0: 
-                #     for t, p in zip(psd_targets, targets):
-                #         nt = len(t['labels'])
-                #         np = len(p['labels'])
-                #         self.save['gt'] += nt
-                #         self.save['pesudo'] += np
-                #         ratio = self.save['gt']/ self.save['pesudo']
-                #         self.writer.add_scalar('gt/pesudo', ratio, self.count)
-                #     self.count += 1
-
                 losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, med_feats_info, _fake_query_labels)
-
             else:
                 losses = self.criterion(outputs, targets)
+
+            # **************** START store fake query****************
+            with torch.no_grad():
+                outputs_without_aux = {k: v for k, v in outputs.items() if 'pred' in k}
+                complete_psd_targets = []
+                if old_pred is not None:
+                    for i, (p, t) in enumerate(zip(psd_targets, targets)):
+                        complete_psd_targets.append(
+                            {
+                                'labels': torch.cat([p['labels'], t['labels']]),\
+                                'masks': torch.cat([p['masks'], t['masks']]),\
+                                'boxes': torch.cat([p['boxes'], t['boxes']])
+                            }
+                        )
+                else:
+                    complete_psd_targets = targets
+                indices = self.criterion.matcher(outputs_without_aux, complete_psd_targets)
+                for index, (indice, target) in enumerate(zip(indices, complete_psd_targets)):
+                    labels = target['labels']
+                    for q, l in zip(*indice):
+                        gt_class = labels[l].item()
+                        if gt_class not in self.collect:
+                            if dist.is_initialized():
+                                world_size = dist.get_world_size()
+                            else:
+                                world_size = 1 
+                            maxlen = self.lib_size //world_size
+                            self.collect[gt_class] = deque(maxlen=maxlen)
+                        
+                        self.collect[gt_class].append({
+                            'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
+                            'scores': outputs['pred_logits'][index][q][gt_class].item()
+                        })
+            # ****************END store fake query****************
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:
