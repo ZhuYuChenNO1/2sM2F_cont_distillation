@@ -259,9 +259,9 @@ class SetCriterion(nn.Module):
         # target_boxes = target_boxes[:, :2]
         
         # For ADE200k
-        # stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
-        #     54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
-        stuff_idx = np.array([])
+        stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
+            54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
+        # stuff_idx = np.array([])
 
         isthing = ~np.isin(target_labels.cpu().numpy(), stuff_idx)
         target_boxes=target_boxes[isthing]

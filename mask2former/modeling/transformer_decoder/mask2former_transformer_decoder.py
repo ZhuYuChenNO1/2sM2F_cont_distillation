@@ -448,7 +448,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             print("Use PSD distribution")
             with open(os.path.join(output_dir, 'psd_distribution.json'), 'r') as f:
                 psd_dis = json.load(f)
-                psd_dis = torch.tensor(psd_dis[:int(self.n_cls_in_tasks.sum().item())-5]) + 1
+                psd_dis = torch.tensor(psd_dis[:int(self.n_cls_in_tasks.sum().item())-int(self.n_cls_in_tasks[-1].item())]) + 1
             self.psd_dis = torch.sqrt(psd_dis.sum()/psd_dis)
         else:
             print("No PSD distribution", self.n_cls_in_tasks, self.collect_query_mode[0], type(self.collect_query_mode))
@@ -464,58 +464,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             query_root = self.output_dir[:-1] + f"{self.task-1}"
         else:
             query_root = self.output_dir[:-2] + f"{self.task-1}"
-
-        # def load_query_lib(query_root, rank, device='cpu'):
-        #     if rank == 0:
-        #         try:
-        #             with open(f"{query_root}/fake_query.pkl", 'rb') as f:
-        #                 query_lib = pickle.load(f)
-        #                 print(f"Rank {rank}: Loaded query_lib with {len(query_lib)} entries.")
-        #         except FileNotFoundError:
-        #             print(f"Rank {rank}: File {query_root}/fake_query.pkl not found.")
-        #             query_lib = {}
-        #         except Exception as e:
-        #             print(f"Rank {rank}: Error loading query_lib: {e}")
-        #             query_lib = {}
-                
-        #         # 序列化字典为字节流
-        #         serialized_query_lib = pickle.dumps(query_lib)
-        #         serialized_size = torch.tensor([len(serialized_query_lib)], dtype=torch.long, device=device)
-        #     else:
-        #         query_lib = {}
-        #         # 准备接收的张量大小
-        #         serialized_size = torch.tensor([0], dtype=torch.long, device=device)
-
-        #     # 广播字节流大小
-        #     dist.broadcast(serialized_size, src=0)
-
-        #     # 在非主进程分配接收缓冲区
-        #     serialized_query_lib = torch.empty(serialized_size.item(), dtype=torch.uint8, device=device) if rank != 0 else torch.tensor(list(serialized_query_lib), dtype=torch.uint8, device=device)
-
-        #     # 广播字节流
-        #     dist.broadcast(serialized_query_lib, src=0)
-
-        #     # 在非主进程反序列化字节流为字典
-        #     if rank != 0:
-        #         serialized_query_lib = bytes(serialized_query_lib.cpu().numpy())
-        #         query_lib = pickle.loads(serialized_query_lib)
-        #         print(f"Rank {rank}: Received query_lib with {len(query_lib)} entries.")
-
-        #     return query_lib
-
-        # if self.task > 1:
-        #     rank = dist.get_rank()
-        #     # 使用 'cuda' 或 'cpu' 作为设备
-        #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        #     self.query_lib = load_query_lib(query_root, rank, device)
-
-        #     if rank == 0 and self.query_lib:
-        #         try:
-        #             print([len(self.query_lib[q]) for q in self.query_lib.keys()])
-        #         except KeyError as e:
-        #             print(f"Rank {rank}: KeyError when accessing query_lib: {e}")
-        #         except Exception as e:
-        #             print(f"Rank {rank}: Error in accessing query_lib: {e}")  
 
         # if self.task > 1:
         #     # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU

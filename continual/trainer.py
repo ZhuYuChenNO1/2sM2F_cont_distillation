@@ -60,6 +60,7 @@ from .evaluator import SemSegEvaluator, COCOPanopticEvaluator, InstanceSegEvalua
 from .train_loop import SimpleTrainer, AMPTrainer
 import torch.distributed as dist
 import collections
+import functools
 
 class Trainer(DefaultTrainer):
 
@@ -489,7 +490,8 @@ class Trainer(DefaultTrainer):
 
             if dist.get_rank() == 0:
                 # combine collect
-                combined_collect = collections.defaultdict(deque_factory)
+                deque_factory_with_size = functools.partial(deque_factory, self.cfg.CONT.LIB_SIZE)
+                combined_collect = collections.defaultdict(deque_factory_with_size)
                 
                 for gpu_collect in gathered_collect:
                     for key, deque_value in gpu_collect.items():
