@@ -70,9 +70,12 @@ def setup(args):
             cfg.CONT.OLD_WEIGHTS = cfg.MODEL.WEIGHTS
 
     elif args.eval_only:
-        cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR[:-1] + str(cfg.CONT.TASK), "model_final.pth")
-        if cfg.CONT.TASK >= 10:
-            cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR[:-2] + str(cfg.CONT.TASK), "model_final.pth")
+        if cfg.CONT.WEIGHTS is not None:
+            cfg.MODEL.WEIGHTS = cfg.CONT.WEIGHTS
+        else:
+            cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR[:-1] + str(cfg.CONT.TASK), "model_final.pth")
+            if cfg.CONT.TASK >= 10:
+                cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR[:-2] + str(cfg.CONT.TASK), "model_final.pth")
 
     cfg.freeze()
     default_setup(cfg, args)
@@ -105,6 +108,7 @@ def main(args):
         register_current_ade20k_panoptic(predefined_split)
 
         if cfg.CONT.TASK > 1 and cfg.CONT.MEMORY == True:
+            print('***********Including Memory***********')
             predefined_split_memory = {
                 "memory_ade20k_panoptic_train": (
                     "datasets/ADEChallengeData2016/images/training",

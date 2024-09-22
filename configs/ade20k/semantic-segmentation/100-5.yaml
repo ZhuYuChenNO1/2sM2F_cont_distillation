@@ -2,7 +2,7 @@ _BASE_: continual_maskformer2_R101_bs8_160k.yaml
 CONT:
   TOT_CLS: 150
   BASE_CLS: 100
-  INC_CLS: 10
+  INC_CLS: 5
   TASK: 1
   LIB_SIZE: 80
   PSD_LABEL_THRESHOLD: 0.8

@@ -452,7 +452,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             self.psd_dis = torch.sqrt(psd_dis.sum()/psd_dis)
         else:
             print("No PSD distribution", self.n_cls_in_tasks, self.collect_query_mode[0], type(self.collect_query_mode))
-            self.psd_dis = torch.tensor([1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0])
+            self.psd_dis = torch.ones(100)
 
         # self.watch = torch.zeros(150)
         # self.count = 0
@@ -465,6 +465,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         else:
             query_root = self.output_dir[:-2] + f"{self.task-1}"
 
+        self.sample_num = 3
         # if self.task > 1:
         #     # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU
         #     with open(f"{query_root}/fake_query.pkl", 'rb') as f:
@@ -548,7 +549,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             else:
                 # print("Use weighted query", self.weighted_sample)
                 sampleWeight = self.psd_dis
-            fake_targets = torch.multinomial(sampleWeight, bs, replacement=False)
+            # print(len(sampleWeight))
+            fake_targets = torch.multinomial(sampleWeight, 3*bs, replacement=True)
             # self.watch[fake_targets] += 1
             fake_query = []
             for i in fake_targets:
@@ -556,9 +558,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device))  # 去掉外面的 []
 
             # 将列表中的张量进行拼接
-            fake_query = torch.stack(fake_query, dim=0).unsqueeze(1)
+            fake_query = torch.stack(fake_query, dim=0).reshape(bs, 3, -1)
             fake_query = fake_query.detach()
+            fake_targets = fake_targets.reshape(bs, -1)
         else:
+            fake_query = None
             fake_targets = None
 
         # bs * 1 * dim
@@ -664,7 +668,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         output = tgt_undetach.permute(1, 0, 2).detach()
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
         if self.training and self.task >1:
-            refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, 1))
+            refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, self.sample_num))
 
         #**************************
         # scores, labels = enc_output_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
@@ -681,7 +685,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         interm_outputs=dict()
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
-        interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,1,0,0)) \
+        interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,self.sample_num,0,0)) \
             if self.task > 1 else refpoint_embed_unsig_undetach.sigmoid()
         # print('modify here')
         predictions_class = []
@@ -747,18 +751,18 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             
             # attention: cross-attention first
             if self.training and self.task >1:
-                fake_query_embed = output[-1].unsqueeze(0) # 1 * bs * dim
+                fake_query_embed = output[-self.sample_num:,:] #.unsqueeze(0) # 1 * bs * dim
 
                 output = self.transformer_self_attention_layers[i](
-                    output[:-1], tgt_mask=None,
+                    output[:-self.sample_num], tgt_mask=None,
                     tgt_key_padding_mask=None,
-                    query_pos=query_embed[:-1]
+                    query_pos=query_embed[:-self.sample_num]
                 )
                 output = self.transformer_cross_attention_layers[i](
                     output, src[level_index],
-                    memory_mask=attn_mask[:,:-1,:],
+                    memory_mask=attn_mask[:,:-self.sample_num,:],
                     memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                    pos=pos[level_index], query_pos=query_embed[:-1]
+                    pos=pos[level_index], query_pos=query_embed[:-self.sample_num]
                 )
                 output = torch.cat([output, fake_query_embed], dim=0)
             else:

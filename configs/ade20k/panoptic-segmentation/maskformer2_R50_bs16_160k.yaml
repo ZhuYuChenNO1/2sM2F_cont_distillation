@@ -41,7 +41,7 @@ MODEL:
       INSTANCE_ON: True
       PANOPTIC_ON: True
       OVERLAP_THRESHOLD: 0.8
-      OBJECT_MASK_THRESHOLD: 0.35
+      OBJECT_MASK_THRESHOLD: 0.0
 CONT:
   TASK: 2
 OUTPUT_DIR: outputs/ade20k_panoptic_SCE_twoS_v2_100q_norm_nothingloss 

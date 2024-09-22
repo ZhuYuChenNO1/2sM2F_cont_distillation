@@ -53,7 +53,7 @@ class MaskFormer(nn.Module):
         output_dir:str,
         current_catagory_ids: list = None,
         task: int = 1,
-        psd_overlap_threshold: float = 0.8,
+        psd_label_threshold: float = 0.35,
         collect_query_mode: bool = False,
         lib_size: int = 80,
     ):
@@ -117,7 +117,8 @@ class MaskFormer(nn.Module):
         }
         self.task = task
         # print(f"current_catagory_ids: {task}")
-        self.psd_overlap_threshold = psd_overlap_threshold
+        self.psd_overlap_threshold = 0.8
+        self.psd_label_threshold = psd_label_threshold
         # self.writer = SummaryWriter(log_dir=f"output/ps/100-10_psd0.8/step{task}")
         self.count = 0
         self.psd_num = torch.zeros(150)
@@ -212,7 +213,7 @@ class MaskFormer(nn.Module):
             "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
             "current_catagory_ids": current_catagory_ids,
             "task": cfg.CONT.TASK,
-            "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP,
+            "psd_label_threshold": cfg.CONT.PSD_LABEL_THRESHOLD,
             "collect_query_mode": cfg.CONT.COLLECT_QUERY_MODE,
             "output_dir": cfg.OUTPUT_DIR,
             "lib_size" : cfg.CONT.LIB_SIZE,
@@ -356,7 +357,8 @@ class MaskFormer(nn.Module):
                     scores, labels = mask_cls_result.sigmoid().max(-1)
                     # n_cls = sum([cls_embed.out_features for cls_embed in self.sem_seg_head.predictor.class_embeds])
                     n_cls = sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])
-                    keep = labels.ne(n_cls) & (scores > self.object_mask_threshold)
+                    keep = labels.ne(n_cls) & (scores > self.psd_label_threshold)
+                    # keep = labels.ne(n_cls) & (scores > 0.0)
 
                     T = 0.06 
                     scores, labels = F.softmax(mask_cls_result.sigmoid() / T, dim=-1).max(-1)
@@ -468,9 +470,9 @@ class MaskFormer(nn.Module):
             for k in range(old_labels.shape[0]):
                 non_ol_masks[k] = (mask_ids == k) & (old_masks[k] >= 0.5)
 
-            if not memory_part[i]:
-                gt_region = torch.clamp(gt_target["masks"].sum(0).int(), min=0, max=1)
-                non_ol_masks = torch.logical_and(non_ol_masks, torch.logical_not(gt_region))
+            # if not memory_part[i]:
+            gt_region = torch.clamp(gt_target["masks"].sum(0).int(), min=0, max=1)
+            non_ol_masks = torch.logical_and(non_ol_masks, torch.logical_not(gt_region))
 
             new_area = non_ol_masks.sum(dim=(1, 2))
             # keep = (new_area > 0) & (new_area > old_area * self.overlap_threshold)
@@ -498,9 +500,48 @@ class MaskFormer(nn.Module):
         return psd_targets, old_targets
 
     def semantic_inference(self, mask_cls, mask_pred):
-        mask_cls = F.softmax(mask_cls, dim=-1)[..., :-1]
+        T = 0.06
+        mask_cls = mask_cls.sigmoid()
+        scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
         mask_pred = mask_pred.sigmoid()
-        semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
+        # semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
+
+        h, w = mask_pred.shape[-2:]
+        # keep = labels.ne(self.sem_seg_head.num_classes) & (scores > 0.0)
+        keep = labels.ne(100) & (scores >= 0.8)
+        cur_scores = scores[keep]
+        cur_classes = labels[keep]
+        cur_masks = mask_pred[keep]  # sigmoid done up.
+        # print(f"{mask_cls.shape} cur_masks: {cur_masks.shape} , num_classes: {self.sem_seg_head.num_classes}")
+
+        cur_prob_masks = cur_scores.view(-1, 1, 1) * cur_masks
+
+        semseg = torch.ones((h, w), dtype=torch.long, device=cur_masks.device)*self.sem_seg_head.num_classes
+
+        if cur_masks.shape[0] == 0:
+            # We didn't detect an mask :(
+            # semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
+            semseg = F.one_hot(semseg, self.sem_seg_head.num_classes+1).float().permute(2, 0, 1)
+        else:
+            # take argmax
+            cur_mask_ids = cur_prob_masks.argmax(0)
+
+            for k in range(cur_classes.shape[0]):
+                pred_class = cur_classes[k].item()
+                mask_area = (cur_mask_ids == k).sum().item()
+                original_area = (cur_masks[k] >= 0.5).sum().item()
+                mask = (cur_mask_ids == k) & (cur_masks[k] >= 0.5)
+                #fixme mask_area should be computed differently !
+                # mask_area = mask.sum().item()
+
+                if mask_area > 0 and original_area > 0 and mask.sum().item() > 0:
+                    if mask_area / original_area < self.overlap_threshold:
+                        continue
+
+                    semseg[mask] = pred_class 
+            # semseg[semseg == self.sem_seg_head.num_classes] = cur_mask_ids[semseg == self.sem_seg_head.num_classes]
+            semseg = F.one_hot(semseg, self.sem_seg_head.num_classes+1).float().permute(2, 0, 1)
+            # print(f"semseg: {semseg.shape}")
         return semseg
 
     def panoptic_inference(self, mask_cls, mask_pred):

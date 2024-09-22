@@ -157,6 +157,7 @@ class SetCriterion(nn.Module):
         self.importance_sample_ratio = importance_sample_ratio
         self.focal_alpha = 0.25
         self.current_catagory_ids = torch.tensor(current_catagory_ids)
+        self.sample_num = 3
 
     def loss_labels_ce(self, outputs, targets, indices, num_masks):
         """Classification loss (NLL)
@@ -259,9 +260,9 @@ class SetCriterion(nn.Module):
         # target_boxes = target_boxes[:, :2]
         
         # For ADE200k
-        stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
-            54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
-        # stuff_idx = np.array([])
+        # stuff_idx = np.array([0, 1, 2, 3, 4, 5, 6, 9, 11, 13, 16, 17, 21, 25, 26, 28, 29, 34, 40, 46, 48, 51, 52, \
+        #     54, 59, 60, 61, 63, 68, 77, 79, 84, 91, 94, 96, 99, 100, 101, 105, 106, 109, 113, 114, 117, 122, 128, 131, 140, 141, 145])
+        stuff_idx = np.array([])
 
         isthing = ~np.isin(target_labels.cpu().numpy(), stuff_idx)
         target_boxes=target_boxes[isthing]
@@ -480,11 +481,21 @@ class SetCriterion(nn.Module):
         new_targets = copy.deepcopy(targets)
         for indice in indices:
             new_indice = list(copy.deepcopy(indice))
-            new_indice[0] = torch.cat((new_indice[0], torch.tensor([100], device=indice[0].device)))
-            new_indice[1] = torch.cat((new_indice[1], torch.tensor([(max(indice[1])+1)], device=indice[0].device)))
+            new_indice[0] = torch.cat((new_indice[0], torch.arange(100,100+self.sample_num).to(torch.long))) # torch.tensor([100, 101, 102], device=indice[0].device)))
+            max_indice = max(indice[1]).long() if len(indice[1]) > 0 else torch.tensor(-1).long()
+            new_indice[1] = torch.cat(
+                (
+                    new_indice[1],
+                    torch.tensor(
+                        [max_indice + i + 1 for i in range(self.sample_num)], 
+                        dtype=torch.long,  
+                        device=indice[0].device 
+                    )
+                )
+            )
             new_indices.append(new_indice)
         for i, (t, fql) in enumerate(zip(new_targets, fake_query_labels)):
-            t['labels'] = torch.cat((t['labels'], torch.tensor([fql], device=t['labels'].device)))
+            t['labels'] = torch.cat((t['labels'], fql.clone().detach().to(t['labels'].device)))
         
         return new_indices, new_targets
         
