@@ -212,43 +212,44 @@ ADE20K_150_CATEGORIES = [
 # v1>>v2
 # ids = [106 , 68  ,44,  0 ,  4 , 29 ,141 ,144 , 92 ,145  ,62 ,109  , 5   ,2  ,84 ,113 , 51 ,143 ,103, 104]
 # v2>>v1
-# ids = [73,121,140,105,88]
-anno = '../datasets/ADEChallengeData2016/ade20k_panoptic_val.json'
+ids = [ 45, 34,78]
+anno = '/public/home/zhuyuchen530/projects/2sM2F_cont_distillation/json/pan/val_100-5_step3_pan.json'
 gt_vis = '/public/home/zhuyuchen530/projects/ECLIPSE/ade_ps_base_gt_val'
-output = '/inspurfs/group/yangsb/zhuyuchen/2stage_analyse/v2better/mask2former_2s_v2'
-# with open(anno, 'r') as f:
-#     data = json.load(f)
+output = './v2better/mask2former_2s_v2'
+with open(anno, 'r') as f:
+    data = json.load(f)
 
-# anno_list = data['annotations']
-# image_list = {}
-# for anno_per_img in anno_list:
-#     for an in anno_per_img['segments_info']:
-#         idx = an['category_id']
-#         if idx in ids:
-#             if idx not in image_list:
-#                 image_list[idx] = []
-#             if anno_per_img['file_name'] not in image_list[idx]:
-#                 image_list[idx].append(anno_per_img['file_name'])
-# image_list = dict(sorted(image_list.items()))
+anno_list = data['annotations']
+image_list = {}
+for anno_per_img in anno_list:
+    for an in anno_per_img['segments_info']:
+        idx = an['category_id']
+        if idx in ids:
+            if idx not in image_list:
+                image_list[idx] = []
+            if anno_per_img['file_name'] not in image_list[idx]:
+                image_list[idx].append(anno_per_img['file_name'])
+image_list = dict(sorted(image_list.items()))
 # image_list = ['ADE_train_00009424.png',  "ADE_train_00009428.png",  "ADE_train_00009508.png",  \
 #     "ADE_train_00009591.png", "ADE_train_00009611.png", "ADE_train_00000308.png",  "ADE_train_00000553.png", \
 #         "ADE_train_00000576.png", "ADE_train_00000650.png",  "ADE_train_00001503.png" ]
-image_list = ['ADE_train_00009508.jpg','ADE_train_00008751.jpg','ADE_train_00004785.jpg','ADE_train_00009123.jpg','ADE_train_00009892.jpg',\
- 'ADE_train_00008436.jpg','ADE_train_00009135.jpg','ADE_train_00003171.jpg','ADE_train_00011140.jpg',]
+# image_list = ['ADE_train_00009508.jpg','ADE_train_00008751.jpg','ADE_train_00004785.jpg','ADE_train_00009123.jpg','ADE_train_00009892.jpg',\
+#  'ADE_train_00008436.jpg','ADE_train_00009135.jpg','ADE_train_00003171.jpg','ADE_train_00011140.jpg',]
 print(image_list)
-for j, img in enumerate(image_list):
-    img = img.split('.')[0] + '.jpg'
-    gt = os.path.join(gt_vis, img)
+for j, category in enumerate(image_list):
+    for img in image_list[category]:
+        img = img.split('.')[0] + '.jpg'
+        gt = os.path.join(gt_vis, img)
 
-    with open('twostageinfo/filename.txt', 'w')as f:
-        f.write(img)
-    with open('twostageinfo/filename.txt', 'r')as f:
-        a = f.readline()
-        print(a)
+        with open('twostageinfo/filename.txt', 'w')as f:
+            f.write(img)
+        with open('twostageinfo/filename.txt', 'r')as f:
+            a = f.readline()
+            print(a)
 
-    subprocess.run(f'bash run_demo.sh {img}', shell=True)
-    # if os.path.exists(gt):
-    #     subprocess.run(f'bash run_demo.sh {img}', shell=True)
-    #     # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
-    # else:
-    #     print(f'{gt} not exists')
+        subprocess.run(f'bash run_demo.sh {img} {category}', shell=True)
+        # if os.path.exists(gt):
+        #     subprocess.run(f'bash run_demo.sh {img}', shell=True)
+        #     # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)
+        # else:
+        #     print(f'{gt} not exists')
