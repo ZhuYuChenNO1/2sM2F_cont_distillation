@@ -132,7 +132,7 @@ class SetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses,
-                 num_points, oversample_ratio, importance_sample_ratio, current_catagory_ids=None):
+                 num_points, oversample_ratio, importance_sample_ratio, current_catagory_ids=None, vq_number=3, kl_all=True):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -157,7 +157,8 @@ class SetCriterion(nn.Module):
         self.importance_sample_ratio = importance_sample_ratio
         self.focal_alpha = 0.25
         self.current_catagory_ids = torch.tensor(current_catagory_ids)
-        self.sample_num = 3
+        self.vq_number = vq_number
+        self.kl_all = kl_all
 
     def loss_labels_ce(self, outputs, targets, indices, num_masks):
         """Classification loss (NLL)
@@ -447,11 +448,13 @@ class SetCriterion(nn.Module):
         if topk_feats_info is not None:
             distill_logits = outputs['distill_logits'] 
             old_logits = topk_feats_info['class_logits']
-            # old_class_num = min(self.current_catagory_ids)
-            # mask = torch.max(old_logits[...,:old_class_num], dim=-1)[0] > torch.sum(old_logits[...,old_class_num:], dim=-1)
+            if not self.kl_all:
+            # print("distill_logits", distill_logits[0], "old_logits", old_logits[0])
+                old_class_num = min(self.current_catagory_ids)
+                mask = torch.max(old_logits[...,:old_class_num], dim=-1)[0] > torch.sum(old_logits[...,old_class_num:], dim=-1)
 
-            # distill_logits = distill_logits[mask]
-            # old_logits = old_logits[mask]
+                distill_logits = distill_logits[mask]
+                old_logits = old_logits[mask]
             # print(old_logits.shape, distill_logits.shape, old_class_num)
             # select = old_logits.max(-1)[0] > 0.35
             # distill_logits = distill_logits[select]
@@ -481,13 +484,13 @@ class SetCriterion(nn.Module):
         new_targets = copy.deepcopy(targets)
         for indice in indices:
             new_indice = list(copy.deepcopy(indice))
-            new_indice[0] = torch.cat((new_indice[0], torch.arange(100,100+self.sample_num).to(torch.long))) # torch.tensor([100, 101, 102], device=indice[0].device)))
+            new_indice[0] = torch.cat((new_indice[0], torch.arange(100,100+self.vq_number).to(torch.long))) # torch.tensor([100, 101, 102], device=indice[0].device)))
             max_indice = max(indice[1]).long() if len(indice[1]) > 0 else torch.tensor(-1).long()
             new_indice[1] = torch.cat(
                 (
                     new_indice[1],
                     torch.tensor(
-                        [max_indice + i + 1 for i in range(self.sample_num)], 
+                        [max_indice + i + 1 for i in range(self.vq_number)], 
                         dtype=torch.long,  
                         device=indice[0].device 
                     )

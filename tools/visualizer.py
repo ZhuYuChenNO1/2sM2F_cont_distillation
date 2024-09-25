@@ -241,14 +241,14 @@ def _create_text_labels(classes, scores, class_names, is_crowd=None):
     labels = None
     if classes is not None:
         if class_names is not None and len(class_names) > 0:
-            # labels = [class_names[i] if i<100 else "INC_"+class_names[i] for i in classes]
-            labels = []
-            for i in classes:
-                if i<100:
-                    labels.append(class_names[i])
-                else:
-                    task = (i-100)//10+1
-                    labels.append('('+str(task)+') '+class_names[i])
+            labels = [class_names[i] for i in classes]
+            # labels = []
+            # for i in classes:
+            #     if i<100:
+            #         labels.append(class_names[i])
+            #     else:
+            #         task = (i-100)//10+1
+            #         labels.append('('+str(task)+') '+class_names[i])
         else:
             labels = [str(i) for i in classes]
     if scores is not None:

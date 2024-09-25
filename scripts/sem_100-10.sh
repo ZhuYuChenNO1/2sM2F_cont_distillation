@@ -1,5 +1,5 @@
-python train_continual.py --num-gpus 8 --config-file configs/ade20k/semantic-segmentation/100-10.yaml \
-CONT.TASK 1 SOLVER.BASE_LR 0.0001 SOLVER.MAX_ITER 160000 OUTPUT_DIR ./output/ss/100-10/step1
+python train_continual.py --num-gpus 4 --config-file configs/ade20k/semantic-segmentation/100-10.yaml \
+CONT.TASK 1 SOLVER.BASE_LR 0.0001 SOLVER.MAX_ITER 160000 OUTPUT_DIR ./output/ss/100-10_bbox/step1
 
 # for t in 2 3 4 5 6; do
 #   python train_continual.py --config-file configs/ade20k/semantic-segmentation/100-10.yaml \

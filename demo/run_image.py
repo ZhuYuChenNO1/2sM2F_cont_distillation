@@ -212,8 +212,8 @@ ADE20K_150_CATEGORIES = [
 # v1>>v2
 # ids = [106 , 68  ,44,  0 ,  4 , 29 ,141 ,144 , 92 ,145  ,62 ,109  , 5   ,2  ,84 ,113 , 51 ,143 ,103, 104]
 # v2>>v1
-ids = [ 45, 34,78]
-anno = '/public/home/zhuyuchen530/projects/2sM2F_cont_distillation/json/pan/val_100-5_step3_pan.json'
+# ids = [ 45, 34,78]
+anno = '/public/home/zhuyuchen530/projects/2sM2F_cont_distillation/json/pan/val_100-5_step2_pan.json'
 gt_vis = '/public/home/zhuyuchen530/projects/ECLIPSE/ade_ps_base_gt_val'
 output = './v2better/mask2former_2s_v2'
 with open(anno, 'r') as f:
@@ -224,17 +224,16 @@ image_list = {}
 for anno_per_img in anno_list:
     for an in anno_per_img['segments_info']:
         idx = an['category_id']
-        if idx in ids:
-            if idx not in image_list:
-                image_list[idx] = []
-            if anno_per_img['file_name'] not in image_list[idx]:
-                image_list[idx].append(anno_per_img['file_name'])
+        if idx not in image_list:
+            image_list[idx] = []
+        if anno_per_img['file_name'] not in image_list[idx]:
+            image_list[idx].append(anno_per_img['file_name'])
 image_list = dict(sorted(image_list.items()))
 # image_list = ['ADE_train_00009424.png',  "ADE_train_00009428.png",  "ADE_train_00009508.png",  \
 #     "ADE_train_00009591.png", "ADE_train_00009611.png", "ADE_train_00000308.png",  "ADE_train_00000553.png", \
 #         "ADE_train_00000576.png", "ADE_train_00000650.png",  "ADE_train_00001503.png" ]
-# image_list = ['ADE_train_00009508.jpg','ADE_train_00008751.jpg','ADE_train_00004785.jpg','ADE_train_00009123.jpg','ADE_train_00009892.jpg',\
-#  'ADE_train_00008436.jpg','ADE_train_00009135.jpg','ADE_train_00003171.jpg','ADE_train_00011140.jpg',]
+# image_list = ['ADE_val_00000001.jpg','ADE_val_00000709.jpg','ADE_val_00000832.jpg','ADE_val_00000847.jpg','ADE_val_00001198.jpg',\
+#  'ADE_val_00001214.jpg','ADE_val_00001388.jpg','ADE_val_00001515.jpg','ADE_val_00001874.jpg',]
 print(image_list)
 for j, category in enumerate(image_list):
     for img in image_list[category]:
@@ -247,7 +246,8 @@ for j, category in enumerate(image_list):
             a = f.readline()
             print(a)
 
-        subprocess.run(f'bash run_demo.sh {img} {category}', shell=True)
+        subprocess.run(f'bash run_demo.sh {img}', shell=True)
+        break
         # if os.path.exists(gt):
         #     subprocess.run(f'bash run_demo.sh {img}', shell=True)
         #     # subprocess.run(f'cp {gt} {output}/{name}/{gt_img_name} ', shell=True)

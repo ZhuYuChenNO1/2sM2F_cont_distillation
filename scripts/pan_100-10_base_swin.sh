@@ -1,4 +1,4 @@
-python train_continual.py --num-gpus 8 --config-file configs/ade20k/panoptic-segmentation/100-10_swin.yaml\
+python train_continual.py --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/100-10_swin.yaml\
     CONT.TASK 1 SOLVER.BASE_LR 0.0001 SOLVER.MAX_ITER 160000 MODEL.MASK_FORMER.USE_TEXT_EMBEDDING False OUTPUT_DIR ./output/ps/100-10_swin/step1
 # for t in 2; do
 #   python train_continual.py --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/100-10_inc.yaml \

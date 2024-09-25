@@ -132,7 +132,7 @@ class MaskFormer(nn.Module):
 
         with torch.no_grad():
             self.collect = {}
-            if self.task > 1:
+            if self.task > 1 and not self.collect_query_mode:
                 self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
         self.lib_size = lib_size
     @classmethod
@@ -148,6 +148,7 @@ class MaskFormer(nn.Module):
         class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
         dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
         mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
+        kl_weight = cfg.CONT.KL_WEIGHT
 
         # building criterion
         matcher = HungarianMatcher(
@@ -159,7 +160,7 @@ class MaskFormer(nn.Module):
 
         weight_dict = {"interm_loss_ce": class_weight, "loss_ce": class_weight, "interm_loss_mask": mask_weight, \
             "loss_mask": mask_weight, "interm_loss_dice": dice_weight, "loss_dice": dice_weight, "interm_loss_bbox": mask_weight, \
-                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight, "kl_loss" : 2.0}
+                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight, "kl_loss" : kl_weight}
 
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
@@ -188,6 +189,8 @@ class MaskFormer(nn.Module):
             oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
             importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
             current_catagory_ids=current_catagory_ids,
+            vq_number=cfg.CONT.VQ_NUMBER,
+            kl_all=cfg.CONT.KL_ALL,
         )
 
         return {
@@ -263,7 +266,7 @@ class MaskFormer(nn.Module):
                 distill_positions = topk_feats_info['topk_proposals']
             else:
                 distill_positions = None
-            if self.task>1:
+            if self.task>1 and not self.collect_query_mode:
                 outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions, query_lib=self.collect)
             else:
                 outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions)
@@ -450,6 +453,7 @@ class MaskFormer(nn.Module):
             old_labels = old_pred["labels"]
             old_scores = old_pred["scores"]
             old_boxes = old_pred["boxes"]
+            # print(old_labels, len(old_labels.unique()))
 
             if old_masks.shape[0] == 0:
                 psd_target["labels"] = old_labels
@@ -502,13 +506,17 @@ class MaskFormer(nn.Module):
     def semantic_inference(self, mask_cls, mask_pred):
         T = 0.06
         mask_cls = mask_cls.sigmoid()
-        scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
+        scores, labels = mask_cls.max(-1)
+        keep = labels.ne(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])) & (scores >= 0.45)
         mask_pred = mask_pred.sigmoid()
         # semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
 
+        scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
         h, w = mask_pred.shape[-2:]
         # keep = labels.ne(self.sem_seg_head.num_classes) & (scores > 0.0)
-        keep = labels.ne(100) & (scores >= 0.8)
+        # print(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks]))
+        # keep = labels.ne(105) & (scores >= 0.0)
+        # print(torch.sum(keep))
         cur_scores = scores[keep]
         cur_classes = labels[keep]
         cur_masks = mask_pred[keep]  # sigmoid done up.

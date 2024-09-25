@@ -12,5 +12,6 @@ CONT:
   SETTING: "overlapped"
   MED_TOKENS_WEIGHT: 5.0
   MEMORY: False
+  KL_ALL: False
 TEST:
   EVAL_PERIOD: 5000
