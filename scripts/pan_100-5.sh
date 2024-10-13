@@ -1,7 +1,7 @@
 #!/bin/bash
-# python train_continual.py --dist-url auto --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/100-5_test.yaml \
-# CONT.TASK 1 SOLVER.BASE_LR 0.0 SOLVER.MAX_ITER 2500 CONT.LIB_SIZE 80 CONT.COLLECT_QUERY_MODE False OUTPUT_DIR ./output/ps/fake3_psd4/step1 \
-# MODEL.WEIGHTS /public/home/zhuyuchen530/projects/cvpr24/fake3/output/ps/fake3/step1/model_final.pth
+python train_continual.py --dist-url auto --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/100-5_test.yaml \
+CONT.TASK 1 SOLVER.BASE_LR 0.0 SOLVER.MAX_ITER 2500 CONT.LIB_SIZE 80 CONT.COLLECT_QUERY_MODE False OUTPUT_DIR ./output/ps/fake3_psd4/step1 \
+MODEL.WEIGHTS /public/home/zhuyuchen530/projects/cvpr24/fake3/output/ss/100-5_psd0/step1
 # 定义一个包含所有迭代次数的数组
 itratioin=(142 75 154 150 143 234 225 367 154 237)
 

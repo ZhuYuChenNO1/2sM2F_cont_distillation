@@ -23,7 +23,26 @@ import torch.distributed as dist
 
 import random
 
+def generate_random_bbox(n, min_wh=0.1, max_wh=0.5):
+    """
+    随机生成 n 个合理的归一化 bbox,格式为 (cx, cy, w, h)，返回形状为 (n, 4) 的张量。
     
+    参数:
+    - n (int): 生成的 bbox 数量。
+    - min_wh (float): 宽度和高度的最小值 (默认 0.1)。
+    - max_wh (float): 宽度和高度的最大值 (默认 0.5)。
+    
+    返回:
+    - (torch.Tensor): 形状为 (n, 4) 的 bbox 张量，每个 bbox 为 (cx, cy, w, h) 格式，值在 [0, 1] 之间。
+    """
+    random_wh = torch.rand(n, 2) * (max_wh - min_wh) + min_wh  # (n, 2) -> w 和 h
+
+    random_cxcy = torch.rand(n, 2) * (1 - random_wh) + random_wh / 2  # (n, 2) -> cx 和 cy
+
+    random_bbox = torch.cat([random_cxcy, random_wh], dim=-1)  # (n, 4)
+
+    return random_bbox   
+
 def sigmoid_to_logit(x):
     x = x.clamp(0.001, 0.999)
     return torch.log(x / (1-x))
@@ -291,6 +310,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         weighted_sample: bool,
         vq_number: int,
         freeze_label: bool=False,
+        add_pos_to_vq: bool=False,
         distribution_alpha: float=0.5,
     ):
         """
@@ -448,7 +468,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # with open('step1Query.pkl', 'rb') as f:
         #     step1 = pickle.load(f)
 
-        if self.n_cls_in_tasks.sum().item() > 100 and not self.collect_query_mode[0]:
+        if len(self.n_cls_in_tasks)>1 and not self.collect_query_mode[0]:
             print("Use PSD distribution")
             with open(os.path.join(output_dir, 'psd_distribution.json'), 'r') as f:
                 psd_dis = json.load(f)
@@ -471,6 +491,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             query_root = self.output_dir[:-2] + f"{self.task-1}"
 
         self.vq_number = vq_number
+        self.add_pos_to_vq = add_pos_to_vq
         # if self.task > 1:
         #     # self.query_lib = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')  # 加载到CPU
         #     with open(f"{query_root}/fake_query.pkl", 'rb') as f:
@@ -522,6 +543,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         ret['vq_number'] = cfg.CONT.VQ_NUMBER
         ret['freeze_label'] = cfg.CONT.FREEZE_LABEL
         ret['distribution_alpha'] = cfg.CONT.DISTRIBUTION_ALPHA
+        ret['add_pos_to_vq'] = cfg.CONT.ADD_POS
         # print(f"collect_query_mode: {cfg.CONT.COLLECT_QUERY_MODE}")
         return ret
 
@@ -548,7 +570,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # get fake query with bs
         # fake_target = random.sample(self.fake_query.keys(), bs)
-        # fake_targets = random.sample([52 , 48 , 61 , 55 , 45 ,  78 , 34 , 77,  84 , 79,  58, 99], bs)
+        # bad_cat = [6, 95, 8, 12, 64, 82, 36, 41, 3, 24, 63, 0, 43, 15, 84, 44, 11, 56, 89, 29, 19, 98, 32, 66, 57, 23, 16, 81, 48, 73, 39, 87, 25, 74, 38, 30, 46, 49, 13, 52, 37, 92, 69, 78, 97, 94, 34, 50, 99, 80]
         # fake_targets = random.sample([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 27, 28, 30, 31, 32, 36, 38, 39, 40, 41, 42, 43, 47, 53, 57, 66, 67, 69, 82, 85, 89, 93, 98])
         if query_lib is not None:
             if not self.weighted_sample:
@@ -559,11 +581,13 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 sampleWeight = self.psd_dis
             # print(len(sampleWeight))
             fake_targets = torch.multinomial(sampleWeight, self.vq_number*bs, replacement=True)
+            # fake_targets = torch.as_tensor(random.sample(bad_cat[-30:], self.vq_number*bs))
             # self.watch[fake_targets] += 1
             fake_query = []
             for i in fake_targets:
                 info = random.sample(query_lib[int(i)], 1)[0]
                 fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device))  # 去掉外面的 []
+                # fake_query.append(torch.as_tensor(info, device=src[0].device))
 
             # 将列表中的张量拼接
             fake_query = torch.stack(fake_query, dim=0).reshape(bs, self.vq_number, -1)
@@ -677,6 +701,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
         if self.training and self.task >1 and query_lib:
             refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, self.vq_number))
+            # random_bboxes = generate_random_bbox(self.vq_number).unsqueeze(1).repeat(1, refpoint_embed.shape[1], 1)  # (bs, self.vq_number, 4)
+            # random_bboxes = random_bboxes.to(refpoint_embed.device)
+
+            # # 将随机生成的 bbox 与 refpoint_embed 进行拼接
+            # refpoint_embed = torch.cat([refpoint_embed, random_bboxes], dim=0)
 
         #**************************
         # scores, labels = enc_output_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
@@ -706,7 +735,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         #         filename = f.readline()
         # except:
         #     filename = 'None'
-        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/2sM2F_cont/demo/twostageinfo/vis_qq.pth'
+        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/fake3/demo/twostageinfo/vis_qq.pth'
         # if os.path.exists(path_):
         #     save = torch.load(path_)
         # else:
@@ -759,7 +788,10 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             
             # attention: cross-attention first
             if self.training and self.task >1 and query_lib:
-                fake_query_embed = output[-self.vq_number:,:] #.unsqueeze(0) # 1 * bs * dim
+                fake_query_embed = output[-self.vq_number:,:] #.unsqueeze(0) # x * bs * dim
+                # fake_query_embed += query_embed[-self.vq_number:] # x * bs * dim
+                if self.add_pos_to_vq and i == 0:
+                    fake_query_embed = output[-self.vq_number:, :] + query_embed[-self.vq_number:, :]
 
                 output = self.transformer_self_attention_layers[i](
                     output[:-self.vq_number], tgt_mask=None,
@@ -772,6 +804,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                     memory_key_padding_mask=None,  # here we do not apply masking on padded region
                     pos=pos[level_index], query_pos=query_embed[:-self.vq_number]
                 )
+                
                 output = torch.cat([output, fake_query_embed], dim=0)
             else:
                 output = self.transformer_self_attention_layers[i](
@@ -803,37 +836,24 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
-            if not self.training:
+            # if not self.training:
                 #**************************找到query属于哪个step****************************************************
-                scores, labels = outputs_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
-                # print(f"sum: {self.n_cls_in_tasks.sum()}")
-                moe_idx_last = torch.ones_like(labels) * -1
-                cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
-                for j in range(len(cls_cumsum) - 1):
-                    moe_idx_last[(labels >= cls_cumsum[j]) & (labels < cls_cumsum[j + 1])] = j
-                # check
-                assert moe_idx_last.min() > -1
-                #**************************
-                query_num = []
-                for task in range(len(self.n_cls_in_tasks)):
-                    query_count = torch.sum(moe_idx_last == task)
-                    query_num.append(query_count.item())  # 将tensor转换为Python的整数
-
-                # 使用 TensorBoard 记录所有任务的 query_num 在同一张图中
-                query_num_dict = {f'task_{task}': count for task, count in enumerate(query_num)}
-
-                if torch.cuda.current_device() == 0:
-                    self.writer.add_scalars('query_num', query_num_dict, self.count)
-                    self.count += 1
-                # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
-                # changenum = torch.sum(moe_idx_last!= moe_idx)
-                # print(f"change num {i} -> {i+1}: {changenum}")
-                # moe_idx = moe_idx_last.clone()
+                # scores, labels = outputs_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
+                # # print(f"sum: {self.n_cls_in_tasks.sum()}")
+                # moe_idx_last = torch.ones_like(labels) * -1
+                # cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
+                # for j in range(len(cls_cumsum) - 1):
+                #     moe_idx_last[(labels >= cls_cumsum[j]) & (labels < cls_cumsum[j + 1])] = j
+                # # check
+                # assert moe_idx_last.min() > -1
+                # #**************************
+                # query_num = []
+                # for task in range(len(self.n_cls_in_tasks)):
+                #     query_count = torch.sum(moe_idx_last == task)
 
         # assert len(predictions_class) == self.num_layers + 1
         # print('************************************')
         assert len(predictions_class) == self.num_layers
-
 
         if not self.training:
             out = {
@@ -847,6 +867,17 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
                 'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
             }
+            # out = {
+            #     'pred_logits': interm_outputs['pred_logits'],
+            #     'pred_masks': interm_outputs['pred_masks'],
+            #     'pred_boxes': interm_outputs['pred_boxes'],
+            #     'aux_outputs': self._set_aux_loss(
+            #         predictions_class if self.mask_classification else None, predictions_mask, predictions_box
+            #     ),
+            #     'interm_outputs': interm_outputs,
+            #     'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
+            #     'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
+            # }
             return out
         else:
             out = {

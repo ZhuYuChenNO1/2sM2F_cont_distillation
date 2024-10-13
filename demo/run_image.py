@@ -213,7 +213,7 @@ ADE20K_150_CATEGORIES = [
 # ids = [106 , 68  ,44,  0 ,  4 , 29 ,141 ,144 , 92 ,145  ,62 ,109  , 5   ,2  ,84 ,113 , 51 ,143 ,103, 104]
 # v2>>v1
 # ids = [ 45, 34,78]
-anno = '/public/home/zhuyuchen530/projects/2sM2F_cont_distillation/json/pan/val_100-5_step2_pan.json'
+anno = '/public/home/zhuyuchen530/projects/2sM2F_cont_distillation/json/pan/val_100-5_step1_pan.json'
 gt_vis = '/public/home/zhuyuchen530/projects/ECLIPSE/ade_ps_base_gt_val'
 output = './v2better/mask2former_2s_v2'
 with open(anno, 'r') as f:

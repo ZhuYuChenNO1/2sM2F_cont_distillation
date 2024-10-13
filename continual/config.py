@@ -13,12 +13,17 @@ def add_continual_config(cfg):
     cfg.CONT.MED_TOKENS_WEIGHT = 1.0
     cfg.CONT.MEMORY = False
     cfg.CONT.PSD_LABEL_THRESHOLD = 0.35
+    cfg.CONT.PSD_OVERLAP_THRESHOLD = 0.8
     cfg.CONT.COLLECT_QUERY_MODE = False
     cfg.CONT.CUMULATIVE_PSDNUM = False
     cfg.CONT.WEIGHTED_SAMPLE = True
     cfg.CONT.LIB_SIZE = 80
     cfg.CONT.VQ_NUMBER = 3
+    cfg.CONT.VQ_STORE = False
     cfg.CONT.FREEZE_LABEL = False
     cfg.CONT.KL_ALL = True
     cfg.CONT.KL_WEIGHT = 2.0
+    cfg.CONT.KD_TYPE = 'kl'
     cfg.CONT.DISTRIBUTION_ALPHA = 0.5
+    cfg.CONT.COMBINE_PSDLABEL = False
+    cfg.CONT.ADD_POS = False

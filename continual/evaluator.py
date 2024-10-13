@@ -161,6 +161,10 @@ class SemSegEvaluator(SemSegEvaluator):
         # for i, name in enumerate(self._class_names):
         #     res["ACC-{}".format(name)] = 100 * acc[i]
 
+        logger.info(f'{category_ids_all_and_acc_valid}')
+        logger.info(f'{len(category_ids_all_and_acc_valid)}')
+        for i, x in enumerate(iou):
+            logger.info(f'category {i} iou: {x}')
         res = {}
         res["mIoU"] = 100 * miou
         res["mIoU_old"] = 100 * miou_old

@@ -4,6 +4,8 @@ MaskFormer Training Script.
 
 This script is a simplified version of the training script in detectron2/tools.
 """
+import sys
+sys.path.insert(0, '/public/home/zhuyuchen530/projects/cvpr24/fake3')
 try:
     # ignore ShapelyDeprecationWarning from fvcore
     from shapely.errors import ShapelyDeprecationWarning

@@ -40,7 +40,8 @@ from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.events import EventStorage, get_event_storage
 from detectron2.utils.logger import setup_logger, _log_api_usage
-
+from detectron2.engine import hooks
+from fvcore.nn.precise_bn import get_bn_modules
 # MaskFormer
 from mask2former import (
     COCOInstanceNewBaselineDatasetMapper,
@@ -478,8 +479,6 @@ class Trainer(DefaultTrainer):
                 logger.info("Save psd_distribution.json to {}".format(file))
                 exit()
         elif self.iter == self.cfg.SOLVER.MAX_ITER:
-            import pickle
-
             collect = self.model.module.collect  # collec:dict, key: deque
             if dist.is_initialized():
                 print("Dist initialized, gathering collect data...")
@@ -506,8 +505,57 @@ class Trainer(DefaultTrainer):
             # file = os.path.join(self.cfg.OUTPUT_DIR, "fake_query.pkl")
             # with open(file, 'wb') as f:
                 # pickle.dump(self.model.module.collect, f)
-        for h in self._hooks:
-            h.after_train()
+        if not self.cfg.CONT.VQ_STORE:
+            for h in self._hooks:
+                h.after_train()
+    def build_hooks(self):
+        """
+        Build a list of default hooks, including timing, evaluation,
+        checkpointing, lr scheduling, precise BN, writing events.
 
+        Returns:
+            list[HookBase]:
+        """
+        cfg = self.cfg.clone()
+        cfg.defrost()
+        cfg.DATALOADER.NUM_WORKERS = 0  # save some memory and time for PreciseBN
+
+        ret = [
+            hooks.IterationTimer(),
+            hooks.LRScheduler(),
+            (
+                hooks.PreciseBN(
+                    # Run at the same freq as (but before) evaluation.
+                    cfg.TEST.EVAL_PERIOD,
+                    self.model,
+                    # Build a new data loader to not affect training
+                    self.build_train_loader(cfg),
+                    cfg.TEST.PRECISE_BN.NUM_ITER,
+                )
+                if cfg.TEST.PRECISE_BN.ENABLED and get_bn_modules(self.model)
+                else None
+            ),
+        ]
+
+        # Do PreciseBN before checkpointer, because it updates the model and need to
+        # be saved by checkpointer.
+        # This is not always the best: if checkpointing has a different frequency,
+        # some checkpoints may have more precise statistics than others.
+        if comm.is_main_process() and not cfg.CONT.COLLECT_QUERY_MODE:
+            ret.append(hooks.PeriodicCheckpointer(self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD))
+
+        def test_and_save_results():
+            self._last_eval_results = self.test(self.cfg, self.model)
+            return self._last_eval_results
+
+        # Do evaluation after checkpointer, because then if it fails,
+        # we can use the saved checkpoint to debug.
+        ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD, test_and_save_results))
+
+        if comm.is_main_process():
+            # Here the default print/log frequency of each writer is used.
+            # run writers in the end, so that evaluation metrics are written
+            ret.append(hooks.PeriodicWriter(self.build_writers(), period=20))
+        return ret
 def deque_factory(maxlen=80):
     return collections.deque(maxlen=maxlen)

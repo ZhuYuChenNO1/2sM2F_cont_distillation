@@ -23,6 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 import pickle
 import torch.distributed as dist
+import copy
 
 @META_ARCH_REGISTRY.register()
 class MaskFormer(nn.Module):
@@ -54,8 +55,10 @@ class MaskFormer(nn.Module):
         current_catagory_ids: list = None,
         task: int = 1,
         psd_label_threshold: float = 0.35,
+        psd_overlap_threshold: float = 0.8,
         collect_query_mode: bool = False,
         lib_size: int = 80,
+        combine_psdlabel: bool = False,
     ):
         """
         Args:
@@ -117,7 +120,7 @@ class MaskFormer(nn.Module):
         }
         self.task = task
         # print(f"current_catagory_ids: {task}")
-        self.psd_overlap_threshold = 0.8
+        self.psd_overlap_threshold = psd_overlap_threshold
         self.psd_label_threshold = psd_label_threshold
         # self.writer = SummaryWriter(log_dir=f"output/ps/100-10_psd0.8/step{task}")
         self.count = 0
@@ -132,9 +135,14 @@ class MaskFormer(nn.Module):
 
         with torch.no_grad():
             self.collect = {}
-            if self.task > 1 and not self.collect_query_mode:
-                self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
+            try:
+                if self.task > 1 and not self.collect_query_mode:
+                    self.collect = torch.load(f"{query_root}/fake_query.pkl", map_location='cpu')
+            except:
+                for i in range(10):
+                    print(f"************No query found in {query_root}***********************")
         self.lib_size = lib_size
+        self.combine_psdlabel = combine_psdlabel
     @classmethod
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
@@ -191,6 +199,7 @@ class MaskFormer(nn.Module):
             current_catagory_ids=current_catagory_ids,
             vq_number=cfg.CONT.VQ_NUMBER,
             kl_all=cfg.CONT.KL_ALL,
+            kd_type=cfg.CONT.KD_TYPE,
         )
 
         return {
@@ -217,9 +226,11 @@ class MaskFormer(nn.Module):
             "current_catagory_ids": current_catagory_ids,
             "task": cfg.CONT.TASK,
             "psd_label_threshold": cfg.CONT.PSD_LABEL_THRESHOLD,
+            "psd_overlap_threshold": cfg.CONT.PSD_OVERLAP_THRESHOLD,
             "collect_query_mode": cfg.CONT.COLLECT_QUERY_MODE,
             "output_dir": cfg.OUTPUT_DIR,
             "lib_size" : cfg.CONT.LIB_SIZE,
+            "combine_psdlabel": cfg.CONT.COMBINE_PSDLABEL,
         }
 
     @property
@@ -278,7 +289,8 @@ class MaskFormer(nn.Module):
                 targets = None
 
             if old_pred is not None:
-                psd_targets, old_targets = self.generate_psd_targets(targets, old_pred, gt_instances)
+                psd_targets, old_targets = self.generate_psd_targets(targets, old_pred, gt_instances, False)
+                precise_targets, _ = self.generate_psd_targets(targets, old_pred, gt_instances, False)
 
                 # Save the distribution of pseudo labels
                 if self.collect_query_mode:
@@ -296,7 +308,7 @@ class MaskFormer(nn.Module):
                 outputs_without_aux = {k: v for k, v in outputs.items() if 'pred' in k}
                 complete_psd_targets = []
                 if old_pred is not None:
-                    for i, (p, t) in enumerate(zip(psd_targets, targets)):
+                    for i, (p, t) in enumerate(zip(precise_targets, targets)):
                         complete_psd_targets.append(
                             {
                                 'labels': torch.cat([p['labels'], t['labels']]),\
@@ -319,9 +331,10 @@ class MaskFormer(nn.Module):
                             maxlen = self.lib_size //world_size
                             self.collect[gt_class] = deque(maxlen=maxlen)
                         
+                        # self.collect[gt_class].append(outputs['topk_feats_info']['med_feats'][index][q])
                         self.collect[gt_class].append({
                             'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
-                            'scores': outputs['pred_logits'][index][q][gt_class].item()
+                            # 'scores': outputs['pred_logits'][index][q][gt_class].item()
                         })
             # ****************END store fake query****************
 
@@ -363,8 +376,8 @@ class MaskFormer(nn.Module):
                     keep = labels.ne(n_cls) & (scores > self.psd_label_threshold)
                     # keep = labels.ne(n_cls) & (scores > 0.0)
 
-                    T = 0.06 
-                    scores, labels = F.softmax(mask_cls_result.sigmoid() / T, dim=-1).max(-1)
+                    # T = 0.06 
+                    # scores, labels = F.softmax(mask_cls_result.sigmoid() / T, dim=-1).max(-1)
                     sort = scores[keep].argsort(descending=True)
 
                     output_psd_label['labels'] = labels[keep][sort]
@@ -428,7 +441,7 @@ class MaskFormer(nn.Module):
             )
         return new_targets
 
-    def generate_psd_targets(self, gt_targets, old_preds, gt_instances):
+    def generate_psd_targets(self, gt_targets, old_preds, gt_instances, strict_mode=False):
         if self.current_catagory_ids is not None:
             # memory_part = [bool(
             #     torch.logical_not(torch.isin(tgt['labels'], self.current_catagory_ids.to(tgt['labels'].device))).sum() != 0
@@ -449,10 +462,20 @@ class MaskFormer(nn.Module):
             psd_target = {}
             old_target = {}
 
-            old_masks = old_pred["masks"]
-            old_labels = old_pred["labels"]
-            old_scores = old_pred["scores"]
-            old_boxes = old_pred["boxes"]
+            if strict_mode:
+                keep = old_pred["scores"] >= 0.4
+            else:
+                keep = old_pred["scores"] >= 0.0
+
+            old_masks = old_pred["masks"][keep]
+            old_labels = old_pred["labels"][keep]
+            old_scores = old_pred["scores"][keep]
+            old_boxes = old_pred["boxes"][keep]
+
+            # old_masks = old_pred["masks"]
+            # old_labels = old_pred["labels"]
+            # old_scores = old_pred["scores"]
+            # old_boxes = old_pred["boxes"]
             # print(old_labels, len(old_labels.unique()))
 
             if old_masks.shape[0] == 0:
@@ -471,16 +494,22 @@ class MaskFormer(nn.Module):
             mask_ids = prob_masks.argmax(0)
 
             non_ol_masks = torch.zeros_like(old_masks).to(torch.bool)
+            selected_masks = torch.zeros_like(old_masks).to(torch.bool)
             for k in range(old_labels.shape[0]):
                 non_ol_masks[k] = (mask_ids == k) & (old_masks[k] >= 0.5)
+                selected_masks[k] = (mask_ids == k)
 
             # if not memory_part[i]:
             gt_region = torch.clamp(gt_target["masks"].sum(0).int(), min=0, max=1)
             non_ol_masks = torch.logical_and(non_ol_masks, torch.logical_not(gt_region))
 
             new_area = non_ol_masks.sum(dim=(1, 2))
+            argmax_area = selected_masks.sum(dim=(1, 2))
             # keep = (new_area > 0) & (new_area > old_area * self.overlap_threshold)
-            keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold)
+            if strict_mode:
+                keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold) & (old_area > argmax_area * self.psd_overlap_threshold)
+            else:
+                keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold) & (old_area > argmax_area * self.psd_overlap_threshold)
 
             psd_target["labels"] = old_labels[keep]
             # psd_target["masks"] = non_ol_masks[keep]
@@ -489,38 +518,74 @@ class MaskFormer(nn.Module):
             #     torch.stack([x.clone().contiguous() for x in select_masks ])
             # )
             mask = BitMasks(select_masks.clone().contiguous())
-            psd_target["masks"] = mask.tensor.to(old_labels.device)
-            psd_target["boxes"] = box_ops.box_xyxy_to_cxcywh(mask.get_bounding_boxes().tensor).to(old_labels.device)/image_size_xyxy
-            psd_targets.append(psd_target)
 
-            old_target["labels"] = old_labels[keep]
-            old_target["masks"] = mask.tensor.to(old_labels.device)
-            old_target["boxes"] = box_ops.box_xyxy_to_cxcywh(mask.get_bounding_boxes().tensor).to(old_labels.device)/image_size_xyxy
-            # old_target["scores"] = old_scores[keep]
-            # old_target["masks"] = old_masks[keep]
-            # old_target["boxes"] = old_boxes[keep]
-            old_targets.append(old_target)
+            if self.combine_psdlabel:
+                unique_labels = psd_target["labels"].unique()
+                fused_psd_target = {"labels": [], "masks": [], "boxes": []}
+                fused_psd_target['labels'] = unique_labels
+                temp_masks = []
+                for label in unique_labels:
+                    label_mask = select_masks[psd_target["labels"] == label].sum(dim=0).clamp(min=0, max=1)
+                    temp_masks.append(label_mask)
+                if len(temp_masks) > 0:
+                    temp_masks = torch.stack(temp_masks, dim=0)
+                    temp_masks = BitMasks(temp_masks.clone().contiguous())
+                    fused_psd_target['masks'] = temp_masks.tensor.to(old_labels.device)
+                    fused_psd_target['boxes'] = box_ops.box_xyxy_to_cxcywh(temp_masks.get_bounding_boxes().tensor).to(old_labels.device)/image_size_xyxy
+                else:
+                    temp_masks = torch.tensor([],device=unique_labels.device) 
+                    fused_psd_target['masks'] = temp_masks
+                    fused_psd_target['boxes'] = temp_masks # all tensor([])
+                psd_targets.append(fused_psd_target)
+                old_targets.append(copy.deepcopy(fused_psd_target))
+                # for dd, mask in enumerate(fused_psd_target['masks']):
+                #     import cv2
+                #     cv2.imwrite(f"./temp/{i}_{k}_{fused_psd_target['labels'][dd]}.png", mask.cpu().numpy()*255)
+                    
+            else:
+                psd_target["masks"] = mask.tensor.to(old_labels.device)
+                psd_target["boxes"] = box_ops.box_xyxy_to_cxcywh(mask.get_bounding_boxes().tensor).to(old_labels.device)/image_size_xyxy
+                psd_targets.append(psd_target)
+
+                old_target["labels"] = old_labels[keep]
+                old_target["masks"] = mask.tensor.to(old_labels.device)
+                old_target["boxes"] = box_ops.box_xyxy_to_cxcywh(mask.get_bounding_boxes().tensor).to(old_labels.device)/image_size_xyxy
+                # old_target["scores"] = old_scores[keep]
+                # old_target["masks"] = old_masks[keep]
+                # old_target["boxes"] = old_boxes[keep]
+                old_targets.append(old_target)
 
         return psd_targets, old_targets
 
     def semantic_inference(self, mask_cls, mask_pred):
-        T = 0.06
+        # mask_cls = torch.cat((mask_cls[..., :100], mask_cls[..., 100:]*0.6), dim=-1)
+        # mask_cls = mask_cls[...,:100]
         mask_cls = mask_cls.sigmoid()
         scores, labels = mask_cls.max(-1)
-        keep = labels.ne(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])) & (scores >= 0.45)
+        # print((scores.sort()[0]>=0.4).sum())
+        keep = labels.ne(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])) & (scores >= 0.0)
+        # ***************visualize*********************
+        # try:
+        #     with open('twostageinfo/filename.txt', 'r')as f:
+        #         filename = f.readline()
+        # except:
+        #     filename = 'None'
+        # path_="/public/home/zhuyuchen530/projects/cvpr24/fake3/demo/twostageinfo/vis_qq.pth"
+        # save = torch.load(path_)
+        # save[filename].update({'keep':keep})
+        # print('keep.....')
+        # torch.save(save, path_)
+        # ***************visualize*********************
         mask_pred = mask_pred.sigmoid()
-        # semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
 
-        scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
+        # OPEN FOR PANOPTIC SEGMENTATION!!!
+        # T = 0.06
+        # scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
+
         h, w = mask_pred.shape[-2:]
-        # keep = labels.ne(self.sem_seg_head.num_classes) & (scores > 0.0)
-        # print(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks]))
-        # keep = labels.ne(105) & (scores >= 0.0)
-        # print(torch.sum(keep))
         cur_scores = scores[keep]
         cur_classes = labels[keep]
         cur_masks = mask_pred[keep]  # sigmoid done up.
-        # print(f"{mask_cls.shape} cur_masks: {cur_masks.shape} , num_classes: {self.sem_seg_head.num_classes}")
 
         cur_prob_masks = cur_scores.view(-1, 1, 1) * cur_masks
 
@@ -534,16 +599,19 @@ class MaskFormer(nn.Module):
             # take argmax
             cur_mask_ids = cur_prob_masks.argmax(0)
 
+            r = 0.5
             for k in range(cur_classes.shape[0]):
                 pred_class = cur_classes[k].item()
                 mask_area = (cur_mask_ids == k).sum().item()
-                original_area = (cur_masks[k] >= 0.5).sum().item()
-                mask = (cur_mask_ids == k) & (cur_masks[k] >= 0.5)
+                # mask_area = ((cur_mask_ids == k)& (cur_masks[k] >= r)).sum().item()
+                original_area = (cur_masks[k] >= r).sum().item()
+                mask = (cur_mask_ids == k) & (cur_masks[k] >= r)
                 #fixme mask_area should be computed differently !
                 # mask_area = mask.sum().item()
 
                 if mask_area > 0 and original_area > 0 and mask.sum().item() > 0:
-                    if mask_area / original_area < self.overlap_threshold:
+                    # print(mask_area, original_area, mask.sum().item())
+                    if mask_area / original_area < self.overlap_threshold or original_area / mask_area < self.overlap_threshold: 
                         continue
 
                     semseg[mask] = pred_class 
@@ -573,16 +641,16 @@ class MaskFormer(nn.Module):
         #         filename = f.readline()
         # except:
         #     filename = 'None'
-        # path_="/public/home/zhuyuchen530/projects/cvpr24/2sM2F_cont/demo/twostageinfo/vis_qq.pth"
+        # path_="/public/home/zhuyuchen530/projects/cvpr24/fake3/demo/twostageinfo/vis_qq.pth"
         # save = torch.load(path_)
         # save[filename].update({'keep':keep})
         # print('keep.....')
         # torch.save(save, path_)
         # ***************visualize*********************
 
+        # OPEN FOR PANOPTIC SEGMENTATION
         T = 0.06 
         scores, labels = F.softmax(mask_cls.sigmoid() / T, dim=-1).max(-1)
-        # scores, labels = F.softmax(manu_cls / T, dim=-1).max(-1)
 
         cur_scores = scores[keep]
         cur_classes = labels[keep]
