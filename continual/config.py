@@ -25,5 +25,9 @@ def add_continual_config(cfg):
     cfg.CONT.KL_WEIGHT = 2.0
     cfg.CONT.KD_TYPE = 'kl'
     cfg.CONT.DISTRIBUTION_ALPHA = 0.5
+    cfg.CONT.KD_TEMPERATURE = 0.1
+    cfg.CONT.KD_TEMPERATURE2 = 0.1
+    cfg.CONT.KD_DECODER = True
+    cfg.CONT.FILTER_KD = False
     cfg.CONT.COMBINE_PSDLABEL = False
     cfg.CONT.ADD_POS = False

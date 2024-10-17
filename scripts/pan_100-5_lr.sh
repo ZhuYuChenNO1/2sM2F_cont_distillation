@@ -16,11 +16,11 @@ for t in 2 3 4 5 6 7 8 9 10 11; do
         
         # 运行第一个 Python 命令
         python train_continual.py --dist-url auto --num-gpus 1 --config-file configs/ade20k/panoptic-segmentation/100-5_1gpu.yaml \
-            CONT.TASK ${t} SOLVER.BASE_LR 0.0 SOLVER.MAX_ITER $iter CONT.COLLECT_QUERY_MODE True OUTPUT_DIR ./output/ps/pan_100-5_0_01+1_FL_all/step${t} 
+            CONT.TASK ${t} SOLVER.BASE_LR 0.0 SOLVER.MAX_ITER $iter CONT.COLLECT_QUERY_MODE True OUTPUT_DIR ./output/ps/pan_100-5_0_1+1_FL_all_filter/step${t} 
 
         # 运行第二个 Python 命令
-        python train_continual.py --dist-url auto --num-gpus 8 --config-file configs/ade20k/panoptic-segmentation/100-5.yaml \
-            CONT.TASK ${t} SOLVER.BASE_LR 0.00005 SOLVER.MAX_ITER 5000 CONT.LIB_SIZE 80 CONT.COLLECT_QUERY_MODE False OUTPUT_DIR ./output/ps/pan_100-5_0_01+1_FL_all/step${t}
+        python train_continual.py --dist-url auto --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/100-5_filter.yaml \
+            CONT.TASK ${t} SOLVER.BASE_LR 0.00005 SOLVER.MAX_ITER 5000 CONT.LIB_SIZE 80 CONT.COLLECT_QUERY_MODE False OUTPUT_DIR ./output/ps/pan_100-5_0_1+1_FL_all_filter/step${t}
     else
         echo "Index $index out of range for itratioin array"
     fi

@@ -12,8 +12,9 @@ CONT:
   SETTING: "overlapped"
   MED_TOKENS_WEIGHT: 5.0
   MEMORY: False # We don't use replay in  experiment.
+  KD_DECODER: False
 TEST:
-  EVAL_PERIOD: 5000
+  EVAL_PERIOD: 2501
 MODEL:
   MASK_FORMER:
     USE_TEXT_EMBEDDING: False

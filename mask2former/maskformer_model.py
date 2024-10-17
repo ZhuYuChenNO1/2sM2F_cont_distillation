@@ -168,7 +168,7 @@ class MaskFormer(nn.Module):
 
         weight_dict = {"interm_loss_ce": class_weight, "loss_ce": class_weight, "interm_loss_mask": mask_weight, \
             "loss_mask": mask_weight, "interm_loss_dice": dice_weight, "loss_dice": dice_weight, "interm_loss_bbox": mask_weight, \
-                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight, "kl_loss" : kl_weight}
+                "loss_giou": 2.0, "interm_loss_giou": 2.0,"loss_bbox": mask_weight, "interm_kl_loss" : kl_weight, "kl_loss" : kl_weight}
 
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
@@ -177,7 +177,7 @@ class MaskFormer(nn.Module):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
 
-        losses = ["labels", "masks", "points"]
+        losses = ["labels", "masks", "points", "kd"] if cfg.CONT.TASK > 1 else ["labels", "masks", "points"]
         # losses = ["labels", "masks"]
         num_tasks = 1 + (cfg.CONT.TOT_CLS - cfg.CONT.BASE_CLS) // cfg.CONT.INC_CLS
         n_cls_in_tasks = [cfg.CONT.BASE_CLS] + [cfg.CONT.INC_CLS] * (num_tasks - 1)
@@ -200,6 +200,10 @@ class MaskFormer(nn.Module):
             vq_number=cfg.CONT.VQ_NUMBER,
             kl_all=cfg.CONT.KL_ALL,
             kd_type=cfg.CONT.KD_TYPE,
+            kd_temperature = cfg.CONT.KD_TEMPERATURE,
+            kd_temperature2 = cfg.CONT.KD_TEMPERATURE2,
+            filter_kd=cfg.CONT.FILTER_KD,
+            kd_decoder=cfg.CONT.KD_DECODER,
         )
 
         return {
@@ -237,7 +241,7 @@ class MaskFormer(nn.Module):
     def device(self):
         return self.pixel_mean.device
 
-    def forward(self, batched_inputs, old_pred=None, psd_label=False, topk_feats_info=None, med_feats_info=None):
+    def forward(self, batched_inputs, old_pred=None, psd_label=False, topk_feats_info=None, old_outputs=None):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper`.
@@ -273,20 +277,21 @@ class MaskFormer(nn.Module):
 
         # med_tokens = outputs.pop("med_tokens")
         if self.training:
-            if topk_feats_info is not None:
-                distill_positions = topk_feats_info['topk_proposals']
-            else:
-                distill_positions = None
-            if self.task>1 and not self.collect_query_mode:
-                outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions, query_lib=self.collect)
-            else:
-                outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions)
             # mask classification target
             if "instances" in batched_inputs[0]:
                 gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
                 targets = self.prepare_targets(gt_instances, images)
             else:
                 targets = None
+            if topk_feats_info is not None:
+                distill_positions = topk_feats_info['topk_proposals']
+                # distill_positions = self.filter_distillpoints(distill_positions, features, target)
+            else:
+                distill_positions = None
+            if self.task>1 and not self.collect_query_mode:
+                outputs,  _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions, query_lib=self.collect)
+            else:
+                outputs, _fake_query_labels = self.sem_seg_head(features, distill_positions=distill_positions)
 
             if old_pred is not None:
                 psd_targets, old_targets = self.generate_psd_targets(targets, old_pred, gt_instances, False)
@@ -299,7 +304,7 @@ class MaskFormer(nn.Module):
                             self.psd_num[i] += 1
                     self.count += 1
 
-                losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, med_feats_info, _fake_query_labels)
+                losses = self.criterion(outputs, targets, psd_targets, old_targets, topk_feats_info, old_outputs, _fake_query_labels)
             else:
                 losses = self.criterion(outputs, targets)
 
@@ -331,11 +336,11 @@ class MaskFormer(nn.Module):
                             maxlen = self.lib_size //world_size
                             self.collect[gt_class] = deque(maxlen=maxlen)
                         
-                        # self.collect[gt_class].append(outputs['topk_feats_info']['med_feats'][index][q])
-                        self.collect[gt_class].append({
-                            'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
-                            # 'scores': outputs['pred_logits'][index][q][gt_class].item()
-                        })
+                        self.collect[gt_class].append(outputs['topk_feats_info']['med_feats'][index][q].tolist())
+                        # self.collect[gt_class].append({
+                        #     'med_feats': outputs['topk_feats_info']['med_feats'][index][q],
+                        #     # 'scores': outputs['pred_logits'][index][q][gt_class].item()
+                        # })
             # ****************END store fake query****************
 
             for k in list(losses.keys()):
@@ -352,7 +357,7 @@ class MaskFormer(nn.Module):
             mask_pred_results = outputs["pred_masks"]
             bbox_pred_results = outputs["pred_boxes"]
             topk_feats_info = outputs["topk_feats_info"]
-            med_feats_info = outputs["med_feats_info"]
+            old_outputs = outputs
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -361,7 +366,7 @@ class MaskFormer(nn.Module):
                 align_corners=False,
             )
 
-            del outputs
+            # del outputs
 
             processed_results = []
             for mask_cls_result, mask_pred_result,bbox_pred_result, input_per_image, image_size in zip(
@@ -376,8 +381,10 @@ class MaskFormer(nn.Module):
                     keep = labels.ne(n_cls) & (scores > self.psd_label_threshold)
                     # keep = labels.ne(n_cls) & (scores > 0.0)
 
-                    # T = 0.06 
-                    # scores, labels = F.softmax(mask_cls_result.sigmoid() / T, dim=-1).max(-1)
+                    # use in PS
+                    if not self.combine_psdlabel:
+                        T = 0.06 
+                        scores, labels = F.softmax(mask_cls_result.sigmoid() / T, dim=-1).max(-1)
                     sort = scores[keep].argsort(descending=True)
 
                     output_psd_label['labels'] = labels[keep][sort]
@@ -417,7 +424,7 @@ class MaskFormer(nn.Module):
                         processed_results[-1]["instances"] = instance_r
 
             if psd_label:
-                return processed_results, topk_feats_info, med_feats_info
+                return processed_results, topk_feats_info, old_outputs
             else:
                 return processed_results
 
@@ -557,13 +564,20 @@ class MaskFormer(nn.Module):
 
         return psd_targets, old_targets
 
+    # def filter_distillpoints(self, distill_positions, features, target):
+    #     # get mask for multi-scale features
+    #     for i in distill_positions:
+    #         m = target[i]['masks'].sum(0)
+
+
+    
     def semantic_inference(self, mask_cls, mask_pred):
         # mask_cls = torch.cat((mask_cls[..., :100], mask_cls[..., 100:]*0.6), dim=-1)
         # mask_cls = mask_cls[...,:100]
         mask_cls = mask_cls.sigmoid()
         scores, labels = mask_cls.max(-1)
         # print((scores.sort()[0]>=0.4).sum())
-        keep = labels.ne(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])) & (scores >= 0.0)
+        keep = labels.ne(sum([cls for cls in self.sem_seg_head.predictor.n_cls_in_tasks])) & (scores >= 0.4)
         # ***************visualize*********************
         # try:
         #     with open('twostageinfo/filename.txt', 'r')as f:
@@ -579,8 +593,8 @@ class MaskFormer(nn.Module):
         mask_pred = mask_pred.sigmoid()
 
         # OPEN FOR PANOPTIC SEGMENTATION!!!
-        # T = 0.06
-        # scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
+        T = 0.06
+        scores, labels = F.softmax(mask_cls/T, dim=-1).max(-1)
 
         h, w = mask_pred.shape[-2:]
         cur_scores = scores[keep]

@@ -293,8 +293,8 @@ class AMPTrainer(SimpleTrainer):
 
         with autocast():
             if self.model_old is not None:
-                old_pred, topk_feats_info, med_feats_info = self.model_old(data, psd_label=True)
-                loss_dict = self.model(data, old_pred=old_pred, topk_feats_info=topk_feats_info, med_feats_info=med_feats_info)
+                old_pred, topk_feats_info, old_outputs = self.model_old(data, psd_label=True)
+                loss_dict = self.model(data, old_pred=old_pred, topk_feats_info=topk_feats_info, old_outputs=old_outputs)
             else:
                 loss_dict = self.model(data)
             if isinstance(loss_dict, torch.Tensor):

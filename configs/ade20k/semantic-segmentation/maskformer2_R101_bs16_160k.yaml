@@ -7,5 +7,5 @@ MODEL:
     STEM_OUT_CHANNELS: 64
     STRIDE_IN_1X1: False
     OUT_FEATURES: ["res2", "res3", "res4", "res5"]
-    NORM: "BN"
+    NORM: "SyncBN"
     RES5_MULTI_GRID: [1, 1, 1]  # not used

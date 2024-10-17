@@ -463,6 +463,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         self.weighted_sample = weighted_sample
         # print(f"437collect_query_mode: {collect_query_mode}")
 
+        import pickle
         import json
         # with open('step1Query.pkl', 'rb') as f:
         #     step1 = pickle.load(f)
@@ -585,8 +586,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             fake_query = []
             for i in fake_targets:
                 info = random.sample(query_lib[int(i)], 1)[0]
-                # fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device, dtype=torch.float32))  # 去掉外面的 []
-                fake_query.append(torch.as_tensor(info, device=src[0].device, dtype=torch.float32))
+                fake_query.append(torch.as_tensor(info['med_feats'], device=src[0].device))  # 去掉外面的 []
+                # fake_query.append(torch.as_tensor(info, device=src[0].device))
 
             # 将列表中的张量拼接
             fake_query = torch.stack(fake_query, dim=0).reshape(bs, self.vq_number, -1)
@@ -622,84 +623,229 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         else:
             # enc_outputs_class_unselected =torch.cat([class_embed(self.decoder_norm(output_memory)) for class_embed in self.class_embeds], dim=-1) # (bs, \sum{hw}, num_classes)
             enc_outputs_class_unselected =self.class_embed(self.decoder_norm(output_memory)) # (bs, \sum{hw}, num_classes)
-            # if self.training:
-            #     print("new:",enc_outputs_class_unselected[0][0])
-            # else:
-            #     print("old:",enc_outputs_class_unselected[0][0])
-                
-            # if distill_position is not None:
-            #     interm_distill_logits = torch.gather(enc_outputs_class_unselected, 1, distill_position.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
-            # else:
-            #     interm_distill_logits = None
+            if distill_position is not None:
+                distill_logits = torch.gather(enc_outputs_class_unselected, 1, distill_position.unsqueeze(-1).repeat(1, 1, enc_outputs_class_unselected.shape[-1]))
+            else:
+                distill_logits = None
+            # enc_outputs_class_unselected = torch.cat((-torch.ones((bs, n_points,100), device=enc_outputs_class_unselected.device)*100, enc_outputs_class_unselected), dim=-1)
+        # enc_outputs_class_unselected = self.class_embed(output_memory)  # (bs, \sum{hw}, num_classes)
+        # enc_outputs_class_unselected[..., -10:] *= 0.6
         topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+
+        # Record the ratio of base class to new classes in query selection
+
+        
+
+        # *******************Tensorboard******************
+        # device = torch.cuda.current_device()
+        # if device == 0 and self.training:
+        #     self.count += 1
+        #     self.writer.add_histogram('activated_fake_query' ,self.watch.cpu().numpy().astype(np.int32)  , self.count)
+        #     idx = enc_outputs_class_unselected.max(-1)[1]
+        #     idx = torch.gather(idx, 1, topk_proposals)
+            
+        #     base = torch.sum(idx < 100)
+        #     new_logits = enc_outputs_class_unselected[..., -10:].max(-1)[0]
+        #     old_logits = enc_outputs_class_unselected[..., :-10].max(-1)[0]
+
+        #     n_topk = torch.topk(new_logits.flatten(), 100)[0].mean().detach().cpu().numpy()
+        #     o_topk = torch.topk(old_logits.flatten(), 100)[0].mean().detach().cpu().numpy()
+
+
+        #     # nv = new_logits.detach().cpu().numpy().var()
+        #     nm = new_logits.detach().cpu().numpy().mean()
+        #     # ov = old_logits.detach().cpu().numpy().var()
+        #     om = old_logits.detach().cpu().numpy().mean()
+
+        #     ratio = (len(idx.flatten())-base)/base+1
+        #     self.writer.add_scalar('New/Base', ratio, self.count)
+        #     # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
+        #     self.writer.add_scalars('Mean', {'New Mean': nm, 'Old Mean': om}, self.count)
+        #     self.writer.add_scalars('topk_Mean', {'New_top100 Mean': n_topk, 'Old_top100 Mean': o_topk}, self.count)
+    
+        #     self.count += 1
+        # *******************Tensorboard******************
+        
+        # *******************Tensorboard******************
+        # device = torch.cuda.current_device()
+        # if device == 0: 
+        #     values, idx = enc_outputs_class_unselected.max(-1)
+        #     idx = torch.gather(idx, 1, topk_proposals)
+        #     values = torch.gather(values, 1, topk_proposals)
+        #     rv = values.mean().detach().cpu().numpy()
+            
+        #     base = torch.sum(idx < 100)
+        #     new = len(idx.flatten())-base
+        #     # ratio = (len(idx.flatten())-base)/base+1
+            
+        #     # self.writer.add_scalar('topk Mean', rv, self.count)
+        #     self.writer.add_scalar('New', new , self.count)
+        #     # self.writer.add_scalars('Variance', {'New Var': nv, 'Old Var': ov}, self.count)
+        #     # self.writer.add_scalars('Mean', {'New Mean': nm, 'Old Mean': om}, self.count)
+        #     # self.writer.add_scalars('topk_Mean', {'New_top100 Mean': n_topk, 'Old_top100 Mean': o_topk}, self.count)
+    
+        #     self.count += 1
+        # *******************Tensorboard******************
+
         tgt_undetach = torch.gather(output_memory, 1,
-                                  topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))
-        distill_tgt_undetach = torch.gather(output_memory, 1,
-                                  distill_position.unsqueeze(-1).repeat(1, 1, hid_dim)) \
-                                      if distill_position is not None else None
+                                  topk_proposals.unsqueeze(-1).repeat(1, 1, hid_dim))  # unsigmoid
         # concat with fake query
         if self.training and self.task >1 and query_lib:
             tgt_undetach = torch.cat([tgt_undetach, fake_query], dim=1)
 
         refpoint_embed_unsig_undetach = torch.gather(enc_outputs_coord_unselected, 1,
                                                 topk_proposals.unsqueeze(-1).repeat(1, 1, 4))  # unsigmoid
-
-
-        # Get the feats
-        output = tgt_undetach.permute(1, 0, 2).detach()
-        distill_output = distill_tgt_undetach.permute(1, 0, 2).detach() if distill_position is not None else None
-
         enc_output_class, enc_outputs_mask, attn_mask = self.forward_prediction_heads(
             tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
-        # For KD
-        if distill_position is not None:
-            interm_distill_logits, _, distill_attn_mask = self.forward_prediction_heads(
-                distill_tgt_undetach.transpose(0,1), mask_features, attn_mask_target_size=size_list[0]) 
-            distill_refpoint_embed = torch.gather(enc_outputs_coord_unselected, 1,
-                                                topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).\
-                                                    sigmoid().transpose(0, 1).detach()  
-
+        output = tgt_undetach.permute(1, 0, 2).detach()
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
         if self.training and self.task >1 and query_lib:
             refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, self.vq_number))
             # random_bboxes = generate_random_bbox(self.vq_number).unsqueeze(1).repeat(1, refpoint_embed.shape[1], 1)  # (bs, self.vq_number, 4)
             # random_bboxes = random_bboxes.to(refpoint_embed.device)
 
-            # # 将随机生成的 bbox 与 refpoint_embed 进行拼接
+            # 将随机生成的 bbox 与 refpoint_embed 进行拼接
             # refpoint_embed = torch.cat([refpoint_embed, random_bboxes], dim=0)
+
+        #**************************
+        # scores, labels = enc_output_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
+        # # print(f"sum: {self.n_cls_in_tasks.sum()}")
+        # moe_idx = torch.ones_like(labels) * -1
+        # cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
+        # for i in range(len(cls_cumsum) - 1):
+        #     moe_idx[(labels >= cls_cumsum[i]) & (labels < cls_cumsum[i + 1])] = i
+        # # check
+        # # print(moe_idx.unique(), cls_cumsum)
+        # assert moe_idx.min() > -1
+        #**************************
 
         interm_outputs=dict()
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
         interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,self.vq_number,0,0)) \
             if self.task > 1 else refpoint_embed_unsig_undetach.sigmoid()
-        results = self.forward_decoder(
-                output=output, 
-                mask_features=mask_features, 
-                refpoint_embed=refpoint_embed, 
-                pos=pos, src=src, 
-                attn_mask=attn_mask, 
-                size_list=size_list, 
-                query_lib=query_lib
-            )
-        predictions_class, predictions_mask, predictions_box = results[0], results[1], results[2]
-        if distill_position is not None:
-            distill_results = self.forward_decoder(
-                    output=distill_output, 
-                    mask_features=mask_features, 
-                    refpoint_embed=distill_refpoint_embed, 
-                    pos=pos, src=src, 
-                    attn_mask=distill_attn_mask, 
-                    size_list=size_list, 
-                    query_lib=None,
+        # print('modify here')
+
+        # ***************visualize*********************
+        # try:
+        #     with open('twostageinfo/filename.txt', 'r')as f:
+        #         filename = f.readline()
+        # except:
+        #     filename = 'None'
+        # path_ = '/public/home/zhuyuchen530/projects/cvpr24/fake3/demo/twostageinfo/vis_qq.pth'
+        # if os.path.exists(path_):
+        #     save = torch.load(path_)
+        # else:
+        #     save = {}
+        # temp = {
+        #     filename:{
+        #         'name': filename,
+        #         'topk':topk_proposals,
+        #         'feature':x,
+        #         'enc_outputs_class_unselected':enc_outputs_class_unselected.detach(),
+        #         'enc_mask': enc_outputs_mask.detach(),
+        #         'attn_mask': attn_mask.detach(),
+        #     }
+        # }
+        # save.update(temp)
+        # print(f"saveing")
+        # torch.save(save,path_)
+        # ***************visualize*********************
+
+        predictions_class = []
+        predictions_mask = []
+        predictions_box = []
+        for i in range(self.num_layers):
+            # flaten_mask = enc_outputs_mask.detach().flatten(0, 1)
+            
+            # # Filter mask
+            # # pos_mask = filter_mask(outputs_mask.detach())
+            # # flaten_mask = pos_mask.flatten(0, 1)
+
+            # h, w = outputs_mask.shape[-2:]
+            # # follow maskdino initialize_box_type == 'mask2box':  # faster conversion
+            # refpoint_embed = box_ops.masks_to_boxes(flaten_mask > 0).cuda()
+            # refpoint_embed = box_ops.box_xyxy_to_cxcywh(refpoint_embed) / torch.as_tensor([w, h, w, h],
+            #                                                                                     dtype=torch.float).cuda()
+            # refpoint_embed = refpoint_embed.reshape(outputs_mask.shape[0], outputs_mask.shape[1], 4) # bs,query,4
+            # # refpoint_embed = refpoint_embed[..., :2].transpose(0, 1) # query,bs 2
+            # refpoint_embed = refpoint_embed.transpose(0, 1) # query,bs 4
+
+            query_sine_embed = self._gen_sineembed_for_position(refpoint_embed) # nq, bs, 256*2
+            raw_query_pos = self.ref_point_head(query_sine_embed)  # nq, bs, 256
+            pos_scale = self.query_scale(output) if self.query_scale is not None else 1
+            query_pos = pos_scale * raw_query_pos
+            query_embed = query_pos
+            # ****************************************************************
+            level_index = i % self.num_feature_levels
+            attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
+
+            # attention: cross-attention first
+            if self.training and self.task >1 and query_lib:
+                fake_query_embed = output[-self.vq_number:,:] #.unsqueeze(0) # x * bs * dim
+                # fake_query_embed += query_embed[-self.vq_number:] # x * bs * dim
+                if self.add_pos_to_vq and i == 0:
+                    fake_query_embed = output[-self.vq_number:, :] + query_embed[-self.vq_number:, :]
+
+                output = self.transformer_self_attention_layers[i](
+                    output[:-self.vq_number], tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=query_embed[:-self.vq_number]
                 )
-            distill_info = {
-                'pred_logits': distill_results[0][-1],
-                'aux_outputs': self._set_aux_loss(
-                    distill_results[0], distill_results[1], distill_results[2]
-                ),
-                'interm_outputs': {'pred_logits' : interm_distill_logits}
-            }
+                output = self.transformer_cross_attention_layers[i](
+                    output, src[level_index],
+                    memory_mask=attn_mask[:,:-self.vq_number,:],
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed[:-self.vq_number]
+                )
+                
+                output = torch.cat([output, fake_query_embed], dim=0)
+            else:
+                output = self.transformer_self_attention_layers[i](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=query_embed
+                )
+                output = self.transformer_cross_attention_layers[i](
+                    output, src[level_index],
+                    memory_mask=attn_mask,
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed
+                )
+            # FFN
+            output = self.transformer_ffn_layers[i](
+                output
+            )
+
+            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
+            if self.bbox_embed is not None:
+                reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
+                delta_unsig = self.bbox_embed[i](output)
+                outputs_unsig = delta_unsig + reference_before_sigmoid
+                new_reference_points = outputs_unsig.sigmoid()
+                refpoint_embed = new_reference_points.detach()
+                predictions_box.append(new_reference_points.transpose(0, 1))
+            predictions_class.append(outputs_class)
+            predictions_mask.append(outputs_mask)
+
+            # if not self.training:
+                #**************************找到query属于哪个step****************************************************
+                # scores, labels = outputs_class[...,:self.n_cls_in_tasks.sum()].sigmoid().max(-1)
+                # # print(f"sum: {self.n_cls_in_tasks.sum()}")
+                # moe_idx_last = torch.ones_like(labels) * -1
+                # cls_cumsum = [0] + torch.cumsum(self.n_cls_in_tasks, dim=0).tolist()
+                # for j in range(len(cls_cumsum) - 1):
+                #     moe_idx_last[(labels >= cls_cumsum[j]) & (labels < cls_cumsum[j + 1])] = j
+                # # check
+                # assert moe_idx_last.min() > -1
+                # #**************************
+                # query_num = []
+                # for task in range(len(self.n_cls_in_tasks)):
+                #     query_count = torch.sum(moe_idx_last == task)
+
+        # assert len(predictions_class) == self.num_layers + 1
+        # print('************************************')
+        assert len(predictions_class) == self.num_layers
 
         if not self.training:
             out = {
@@ -736,7 +882,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 'interm_outputs': interm_outputs,
                 'topk_feats_info': {'topk_proposals':topk_proposals, 'med_feats':tgt_undetach, 'class_logits':enc_output_class},
                 'med_feats_info': {'flatten_feats':feats.transpose(0, 1), 'feats_logits':enc_outputs_class_unselected },
-                'distill_info': distill_info if distill_position is not None else None,
+                'distill_logits': distill_logits,
             }
             
             return out, fake_targets
@@ -817,68 +963,4 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         outrange_mask = (label >= self.n_cls_in_tasks.sum()) | (label < 0)
         outNum = torch.sum(outrange_mask)
         return outNum, outrange_mask
-
-    def forward_decoder(self, output, mask_features, refpoint_embed, pos, src, attn_mask, size_list, query_lib):
-        predictions_class = []
-        predictions_mask = []
-        predictions_box = []
-        for i in range(self.num_layers):
-            query_sine_embed = self._gen_sineembed_for_position(refpoint_embed) # nq, bs, 256*2
-
-            raw_query_pos = self.ref_point_head(query_sine_embed)  # nq, bs, 256
-            pos_scale = self.query_scale(output) if self.query_scale is not None else 1
-            query_pos = pos_scale * raw_query_pos
-            query_embed = query_pos
-            level_index = i % self.num_feature_levels
-            attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
-            # attention: cross-attention first
-            if self.training and self.task >1 and query_lib:
-                fake_query_embed = output[-self.vq_number:,:] #.unsqueeze(0) # x * bs * dim
-                if self.add_pos_to_vq and i == 0:
-                    fake_query_embed = output[-self.vq_number:, :] + query_embed[-self.vq_number:, :]
-
-                output = self.transformer_self_attention_layers[i](
-                    output[:-self.vq_number], tgt_mask=None,
-                    tgt_key_padding_mask=None,
-                    query_pos=query_embed[:-self.vq_number]
-                )
-                output = self.transformer_cross_attention_layers[i](
-                    output, src[level_index],
-                    memory_mask=attn_mask[:,:-self.vq_number,:],
-                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                    pos=pos[level_index], query_pos=query_embed[:-self.vq_number]
-                )
-                
-                output = torch.cat([output, fake_query_embed], dim=0)
-            else:
-                output = self.transformer_self_attention_layers[i](
-                    output, tgt_mask=None,
-                    tgt_key_padding_mask=None,
-                    query_pos=query_embed
-                )
-                output = self.transformer_cross_attention_layers[i](
-                    output, src[level_index],
-                    memory_mask=attn_mask,
-                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                    pos=pos[level_index], query_pos=query_embed
-                )
-            # FFN
-            output = self.transformer_ffn_layers[i](
-                output
-            )
-
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
-            if self.bbox_embed is not None:
-                reference_before_sigmoid = inverse_sigmoid(refpoint_embed)
-                delta_unsig = self.bbox_embed[i](output)
-                outputs_unsig = delta_unsig + reference_before_sigmoid
-                new_reference_points = outputs_unsig.sigmoid()
-
-                refpoint_embed = new_reference_points.detach()
-                # if layer_id != self.num_layers - 1:
-                predictions_box.append(new_reference_points.transpose(0, 1))
-            predictions_class.append(outputs_class)
-            predictions_mask.append(outputs_mask)
-
-        return (predictions_class, predictions_mask, predictions_box)
 
