@@ -468,7 +468,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         #     step1 = pickle.load(f)
 
         if len(self.n_cls_in_tasks)>1 and not self.collect_query_mode[0]:
-            print("Use PSD distribution")
+            print("Use PSD distribution ...")
             with open(os.path.join(output_dir, 'psd_distribution.json'), 'r') as f:
                 psd_dis = json.load(f)
                 psd_dis = torch.tensor(psd_dis[:int(self.n_cls_in_tasks.sum().item())-int(self.n_cls_in_tasks[-1].item())]) + 1
@@ -571,7 +571,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # fake_target = random.sample(self.fake_query.keys(), bs)
         # bad_cat = [6, 95, 8, 12, 64, 82, 36, 41, 3, 24, 63, 0, 43, 15, 84, 44, 11, 56, 89, 29, 19, 98, 32, 66, 57, 23, 16, 81, 48, 73, 39, 87, 25, 74, 38, 30, 46, 49, 13, 52, 37, 92, 69, 78, 97, 94, 34, 50, 99, 80]
         # fake_targets = random.sample([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 27, 28, 30, 31, 32, 36, 38, 39, 40, 41, 42, 43, 47, 53, 57, 66, 67, 69, 82, 85, 89, 93, 98])
-        if query_lib is not None:
+        if query_lib is not None and self.vq_number > 0:
             if not self.weighted_sample:
                 # print("Use random query", self.weighted_sample)
                 sampleWeight = torch.ones_like(self.psd_dis)
@@ -638,7 +638,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                                   distill_position.unsqueeze(-1).repeat(1, 1, hid_dim)) \
                                       if distill_position is not None else None
         # concat with fake query
-        if self.training and self.task >1 and query_lib:
+        if self.training and self.task >1 and query_lib and self.vq_number > 0:
             tgt_undetach = torch.cat([tgt_undetach, fake_query], dim=1)
 
         refpoint_embed_unsig_undetach = torch.gather(enc_outputs_coord_unselected, 1,
@@ -660,7 +660,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                                                     sigmoid().transpose(0, 1).detach()  
 
         refpoint_embed = refpoint_embed_unsig_undetach.sigmoid().transpose(0, 1).detach() # bs, topk, 4
-        if self.training and self.task >1 and query_lib:
+        if self.training and self.task >1 and self.vq_number > 0 and query_lib:
             refpoint_embed = F.pad(refpoint_embed, (0, 0, 0, 0, 0, self.vq_number))
             # random_bboxes = generate_random_bbox(self.vq_number).unsqueeze(1).repeat(1, refpoint_embed.shape[1], 1)  # (bs, self.vq_number, 4)
             # random_bboxes = random_bboxes.to(refpoint_embed.device)
@@ -672,7 +672,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         interm_outputs['pred_logits'] = enc_output_class
         interm_outputs['pred_masks'] = enc_outputs_mask
         interm_outputs['pred_boxes'] = F.pad(refpoint_embed_unsig_undetach.sigmoid(), (0,0,0,self.vq_number,0,0)) \
-            if self.task > 1 else refpoint_embed_unsig_undetach.sigmoid()
+            if self.task > 1 and self.vq_number > 0 else refpoint_embed_unsig_undetach.sigmoid()
         results = self.forward_decoder(
                 output=output, 
                 mask_features=mask_features, 

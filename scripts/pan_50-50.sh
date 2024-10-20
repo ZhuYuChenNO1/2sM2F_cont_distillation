@@ -1,5 +1,7 @@
-# python train_continual.py --dist-url auto --resume --num-gpus 8 --config-file configs/ade20k/panoptic-segmentation/50-50.yaml \
-# CONT.TASK 1 SOLVER.BASE_LR 0.0001 SOLVER.MAX_ITER 160000 OUTPUT_DIR ./output/ps/50-50/step1
+#!/bin/bash
+python train_continual.py --dist-url auto --num-gpus 4 --config-file configs/ade20k/panoptic-segmentation/50-50.yaml \
+CONT.TASK 1 SOLVER.BASE_LR 0.0 SOLVER.MAX_ITER 2500 CONT.LIB_SIZE 80 CONT.COLLECT_QUERY_MODE False OUTPUT_DIR ./output/ps/50-50/step1 \
+MODEL.WEIGHTS ./output/ps/100-10_fake1/step1/model_final.pth
 
 itration=(1650 1174)
 

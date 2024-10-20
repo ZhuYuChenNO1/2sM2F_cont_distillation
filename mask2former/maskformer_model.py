@@ -516,7 +516,7 @@ class MaskFormer(nn.Module):
             if strict_mode:
                 keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold) & (old_area > argmax_area * self.psd_overlap_threshold)
             else:
-                keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold) & (old_area > argmax_area * self.psd_overlap_threshold)
+                keep = (new_area > 0) & (new_area > old_area * self.psd_overlap_threshold) #& (old_area > argmax_area * self.psd_overlap_threshold)
 
             psd_target["labels"] = old_labels[keep]
             # psd_target["masks"] = non_ol_masks[keep]

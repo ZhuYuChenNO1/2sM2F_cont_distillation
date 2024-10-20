@@ -370,16 +370,16 @@ class SetCriterion(nn.Module):
             bs = old_probs.shape[0]
 
             # Select with old_probs_entropy 
-            if self.filter_kd:
-                entropy = -torch.sum(old_probs * torch.log(old_probs), dim=-1)
-                # median_entropy = torch.median(entropy, dim=1, keepdim=True)[0]
-                median_entropy = torch.quantile(entropy, q=0.5, dim=1, keepdim=True)
-                # print("entropy:",median_entropy)
-                select = entropy < median_entropy
-                # print( -torch.sum(old_probs * torch.log(old_probs), dim=-1))
-                # print("select: ",select.sum())
-                distill_probs = distill_probs[select].view(bs,int(select.sum()/bs),-1)
-                old_probs = old_probs[select].view(bs,int(select.sum()/bs),-1)
+            # if self.filter_kd:
+            #     entropy = -torch.sum(old_probs * torch.log(old_probs), dim=-1)
+            #     # median_entropy = torch.median(entropy, dim=1, keepdim=True)[0]
+            #     median_entropy = torch.quantile(entropy, q=0.5, dim=1, keepdim=True)
+            #     # print("entropy:",median_entropy)
+            #     select = entropy < median_entropy
+            #     # print( -torch.sum(old_probs * torch.log(old_probs), dim=-1))
+            #     # print("select: ",select.sum())
+            #     distill_probs = distill_probs[select].view(bs,int(select.sum()/bs),-1)
+            #     old_probs = old_probs[select].view(bs,int(select.sum()/bs),-1)
                 # print(f"distill_probs: {distill_probs.shape}, old_probs: {old_probs.shape}")
             # if t<1.0:
             #     show_dis = F.softmax(distill_logits, dim=-1)[0,:10]
@@ -404,6 +404,9 @@ class SetCriterion(nn.Module):
             # kl_loss = kl_loss.sum(-1).mean()
             
             return {'kl_loss': kl_loss}
+        elif self.kd_type == 'l2':
+            loss = self.L2_distillation_loss(distill_logits, old_logits)
+            return {'kl_loss': loss}
         elif self.kd_type == 'ukd':
             targets = old_logits.transpose(1, 2)
             targets = targets * 1
@@ -502,6 +505,7 @@ class SetCriterion(nn.Module):
                 new_indices, new_targets = self._modify_indices_targets_for_fake_query(indices, complete_psd_targets, fake_query_labels)
                 losses.update(self.get_loss(loss, outputs, new_targets, new_indices, num_masks))
             elif loss == 'kd':
+                # self.kd_type = 'l2'
                 if not self.kd_deocder:
                     continue
                 losses.update(self.get_loss(loss, outputs['distill_info'], old_outputs, self.kd_temperature2, num_masks))
@@ -533,6 +537,7 @@ class SetCriterion(nn.Module):
                     new_indices, new_targets = self._modify_indices_targets_for_fake_query(indices, complete_psd_targets, fake_query_labels)
                     l_dict = self.get_loss(loss, outputs["interm_outputs"], new_targets, new_indices, num_masks)
                 elif loss == 'kd':
+                    # self.kd_type = 'kl'
                     # print(self.kd_temperature)
                     l_dict = self.get_loss(loss,outputs['distill_info']['interm_outputs'], old_outputs['interm_outputs'], self.kd_temperature, num_masks)
                 else:
@@ -542,72 +547,30 @@ class SetCriterion(nn.Module):
         
         return losses
 
-        # if topk_feats_info is not None and self.kd_type == 'kl':
-        #     distill_logits = outputs['distill_logits']
-        #     old_logits = topk_feats_info['class_logits']
-        #     if not self.kl_all:
-        #     # print("distill_logits", distill_logits[0], "old_logits", old_logits[0])
-        #         old_class_num = min(self.current_catagory_ids)
-        #         # mask = torch.max(old_logits[...,:old_class_num], dim=-1)[0] > torch.sum(old_logits[...,old_class_num:], dim=-1)
-        #         # distill_logits = distill_logits[mask]
-        #         # old_logits = old_logits[mask]
-        #         distill_logits = distill_logits[...,:old_class_num]
-        #         old_logits = old_logits[...,:old_class_num]
-        #     # print(old_logits.shape, distill_logits.shape, old_class_num)
-        #     # select = old_logits.max(-1)[0] > 0.4
-        #     # print(f"select {select.sum()} samples for distillation, {select.shape}, {distill_logits.shape}, {old_logits.shape}")
-        #     # distill_logits = distill_logits[select]
-        #     # old_logits = old_logits[select]           
-        #     # print(f"after select {select.sum()} samples for distillation, {select.shape}, {distill_logits.shape}, {old_logits.shape}")
-        #     # print(select)
-        #     T = 1
-        #     distill_probs = F.log_softmax(distill_logits/T, dim=-1)
-        #     old_probs = F.softmax(old_logits/T, dim=-1)
-        #     kl_loss = F.kl_div(distill_probs, old_probs, reduction='batchmean')* (T**2)
-        #     # kl_loss = F.kl_div(distill_probs, old_probs, reduction='none')* (T**2)
-        #     # kl_loss = kl_loss.sum(-1)
-
-        #     # bs = distill_logits.shape[0]
-        #     # for i in range(bs):
-        #     #     max_scores, _ = distill_logits[i].max(-1)
-        #     #     max_thresh = max_scores.mean() + 2 * max_scores.std()
-        #     #     mask = max_scores.sigmoid() < 0.4
-        #     #     # print(max_scores.sigmoid().sort())
-        #     #     kl_loss[i][mask] = 0.0
-        #     # kl_loss = kl_loss.sum(-1).mean()
-            
-        #     losses.update({'kl_loss': kl_loss})
-
-        # if topk_feats_info is not None and self.kd_type == 'l2':
-        #     old_class_num = min(self.current_catagory_ids)
-        #     distill_logits = outputs['distill_logits'][...,:old_class_num] 
-        #     old_logits = topk_feats_info['class_logits'][...,:old_class_num]
-            
-        #     kl_loss = self.L2_distillation_loss(distill_logits, old_logits)
-        #     losses.update({'kl_loss': kl_loss})
-        # return losses
-    
     def L2_distillation_loss(self, inputs, targets):
         labels = targets.sigmoid()  # B x Q x C
         outputs = inputs.sigmoid()
 
+        old_class_num = min(self.current_catagory_ids)
+        labels = labels[..., :old_class_num]
+        outputs = outputs[..., :old_class_num]
         batch_size = outputs.shape[0]
-        loss = 0  
+        loss = torch.pow((outputs - labels), 2).sum(dim=-1).mean()  # B
 
-        for i in range(batch_size):
-            max_scores, _ = outputs[i].max(dim=-1)  # Q
-            cls_thr_0 = max_scores.mean() + 2 * max_scores.std()
-            valid_mask = max_scores > cls_thr_0
+        # for i in range(batch_size):
+        #     max_scores, _ = outputs[i].max(dim=-1)  # Q
+        #     cls_thr_0 = max_scores.mean() + 2 * max_scores.std()
+        #     valid_mask = max_scores > cls_thr_0
 
-            select = valid_mask.unsqueeze(-1)  
-            labels_selected = labels[i][select]
-            outputs_selected = outputs[i][select]
+        #     select = valid_mask.unsqueeze(-1)  
+        #     labels_selected = labels[i][select]
+        #     outputs_selected = outputs[i][select]
 
-            if labels_selected.numel() > 0:  # 确保有选中的元素
-                sample_loss = torch.pow((outputs_selected - labels_selected), 2).sum(dim=-1).mean()
-                loss += sample_loss
+        #     if labels_selected.numel() > 0:  # 确保有选中的元素
+        #         sample_loss = torch.pow((outputs_selected - labels_selected), 2).sum(dim=-1).mean()
+        #         loss += sample_loss
 
-        return loss / batch_size
+        return loss/batch_size
 
     def _remove_fake_query(self, outputs):
         ret = {}
